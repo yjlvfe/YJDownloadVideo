@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from app.vercel_upload import parse_bot_api_response, select_downloaded_file
+from app.vercel_upload import parse_bot_api_response, select_downloaded_file, upload_plan
 
 
 def test_select_downloaded_file_ignores_partial_files(tmp_path: Path):
@@ -27,3 +27,10 @@ def test_parse_bot_api_response_returns_result():
 def test_parse_bot_api_response_raises_safe_description():
     with pytest.raises(RuntimeError, match="Bad Request"):
         parse_bot_api_response({"ok": False, "description": "Bad Request: upload failed"})
+
+
+def test_upload_plan_prefers_document_to_avoid_video_processing_delay():
+    assert upload_plan() == [
+        ("sendDocument", "document"),
+        ("sendVideo", "video"),
+    ]

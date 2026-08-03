@@ -14,7 +14,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -25,5 +25,7 @@ jobs:
         run: pip install -r requirements.txt
       - name: Run complete test suite
         run: PYTHONPATH=. pytest -q
-      - name: Compile application
-        run: PYTHONPATH=. python -m compileall -q app
+      - name: Compile application and operational scripts
+        run: PYTHONPATH=. python -m compileall -q app scripts
+      - name: Build production Docker image
+        run: docker build --tag yjdownload:release-gate .

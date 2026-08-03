@@ -14,6 +14,11 @@ from pydantic import BaseModel, Field
 from .config import settings
 from .db import Job, SessionLocal, init_db
 from .security import read_token, validate_public_url
+from .vercel_runtime import (
+    cleanup_application_storage,
+    install_vercel_runtime_hooks,
+    retained_application_media_stats,
+)
 
 for logger_name in ("httpx", "httpcore", "telegram"):
     logging.getLogger(logger_name).setLevel(logging.WARNING)
@@ -100,9 +105,7 @@ def telegram_webhook_secret() -> str:
 def startup() -> None:
     init_db()
     if settings.vercel_mode:
-        from .vercel_media_flow import cleanup_vercel_temp
-
-        cleanup_vercel_temp()
+        cleanup_application_storage(settings.storage_path)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -302,9 +305,10 @@ async def telegram_webhook(request: Request) -> dict:
     try:
         data = await request.json()
         if settings.vercel_mode:
-            from .vercel_media_flow import handle_update
+            from . import vercel_media_flow
 
-            return await handle_update(data)
+            install_vercel_runtime_hooks(vercel_media_flow)
+            return await vercel_media_flow.handle_update(data)
 
         from telegram import Update
         from .bot import handle_update_webhook, webhook_bot
@@ -322,9 +326,9 @@ async def telegram_webhook(request: Request) -> dict:
 
 @app.get("/api/health")
 def health() -> dict:
-    from .vercel_media_flow import retained_media_stats
-
-    retained_media_count, retained_media_bytes = retained_media_stats()
+    retained_media_count, retained_media_bytes = retained_application_media_stats(
+        settings.storage_path
+    )
     return {
         "status": "ok",
         "vercel": settings.vercel_mode,

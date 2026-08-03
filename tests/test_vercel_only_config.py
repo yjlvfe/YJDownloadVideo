@@ -1,9 +1,11 @@
 from pathlib import Path
 
 
-def test_vercel_config_disables_remote_worker_and_retention():
+def test_runtime_config_has_no_remote_worker_or_file_retention():
     source = Path("app/config.py").read_text(encoding="utf-8")
-    assert 'remote_worker_url: str = ""' in source
-    assert "self.file_ttl_seconds = 0" in source
-    assert "self.max_file_size_bytes = min(self.max_file_size_bytes, 49_000_000)" in source
-    assert "self.telegram_send_limit_bytes = min(" in source
+
+    assert "remote_worker_url" not in source
+    assert 'file_ttl_seconds: int = 0' in source
+    assert 'max_file_size_bytes: int = 2_000_000_000' in source
+    assert 'telegram_send_limit_bytes: int = 2_000_000_000' in source
+    assert 'runtime_root = Path("/tmp/yjdownload")' in source

@@ -7,20 +7,23 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH="/opt/venv/bin:${PATH}"
 
 RUN apk add --no-cache \
-      ca-certificates chromium curl ffmpeg python3 py3-pip py3-virtualenv
+      ca-certificates chromium curl ffmpeg nodejs python3 py3-pip py3-virtualenv
 
 WORKDIR /app
 COPY requirements.txt .
 RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
     && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt \
-    && /opt/venv/bin/pip install --no-cache-dir -U yt-dlp
+    && /opt/venv/bin/pip install --no-cache-dir -U --pre "yt-dlp[default]"
 
 COPY . .
 RUN mkdir -p /app/data /app/storage \
     && chmod 0755 /app/docker/start-render.sh \
+    && ffmpeg -version >/dev/null \
+    && node --version \
+    && python -c "import curl_cffi, yt_dlp, yt_dlp_ejs" \
     && python -m compileall -q app \
-    && python -m pytest -q tests/test_media_choice.py tests/test_telegram_api.py tests/test_telegram_flow.py
+    && python -m pytest -q
 
 EXPOSE 10000
 ENTRYPOINT []

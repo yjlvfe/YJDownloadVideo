@@ -5,6 +5,7 @@ import re
 from .remote_worker import forward_telegram_update
 from .security import validate_public_url
 
+# Keep callback forwarding narrow: media never enters the Vercel filesystem.
 _MEDIA_CHOICE_CALLBACK_RE = re.compile(
     r"^pick:(?:(?:v|a):[A-Za-z0-9_-]{6,24}|q:[A-Za-z0-9_-]{6,24}:(?:original|\d{2,4}))$"
 )

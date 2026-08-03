@@ -1,4 +1,4 @@
-import asyncio, json, os, secrets
+import asyncio, json, os, secrets, re, hashlib, hmac
 from datetime import timedelta
 from pathlib import Path
 from fastapi import FastAPI, Request, HTTPException
@@ -17,6 +17,31 @@ class CreateRequest(BaseModel): url: str; format_id: str = 'best'
 
 def owner(request): return request.client.host if request.client else 'unknown'
 def job_json(j): return {'id':j.id,'title':j.title,'thumbnail':j.thumbnail,'status':j.status,'format_id':j.requested_format,'file_size':j.file_size,'duration':j.duration,'error':j.error,'download_url': f'/download/{j.download_token}' if j.download_token else None}
+
+def normalize_formats(raw_formats: list[dict]) -> list[dict]:
+    """قائمة جودات موحدة: الأفضل + كل دقة (فيديو+صوت) + صوت فقط — تطابق قوالب البوت."""
+    unique: dict[tuple[int, str], dict] = {}
+    for item in raw_formats or []:
+        label = str(item.get("label") or "")
+        m = re.match(r"\s*(\d+)p\s*/\s*([^\s]+)", label, re.IGNORECASE)
+        if not m:
+            continue
+        height, ext = int(m.group(1)), m.group(2).lower()
+        size = item.get("size")
+        key = (height, ext)
+        cand = {"id": str(height), "label": f"{height}p / {ext}", "size": size}
+        prev = unique.get(key)
+        if prev is None or (size or 0) > (prev.get("size") or 0):
+            unique[key] = cand
+    qualities = [unique[k] for k in sorted(unique, key=lambda v: (v[0], v[1]))]
+    if not qualities:
+        qualities = [{"id": "1080", "label": "1080p", "size": None},
+                     {"id": "720", "label": "720p", "size": None},
+                     {"id": "480", "label": "480p", "size": None}]
+    return [{"id": "best", "label": "⭐ الأفضل تلقائيًا", "size": None},
+            *qualities,
+            {"id": "audio", "label": "🎵 صوت فقط", "size": None}]
+
 
 @app.on_event('startup')
 def startup(): init_db()
@@ -41,7 +66,7 @@ def inspect(data: InspectRequest):
     finally:
         ex.cleanup()
     return {'title':d.get('title'),'thumbnail':d.get('thumbnail'),'duration':d.get('duration'),
-            'source':d.get('source'),'formats':d.get('formats',[])}
+            'source':d.get('source'),'formats':normalize_formats(d.get('formats',[]))}
 
 @app.post('/api/jobs')
 def create_job(data: CreateRequest, request: Request):
@@ -95,6 +120,13 @@ async def telegram_webhook(request: Request):
     """نقطة Webhook تيليجرام (وضع Vercel — لا يوجد polling دائم هناك)."""
     from telegram import Update
     from .bot import handle_update_webhook, webhook_bot
+    # سر التوقيع: أي طلب بدون السر الصحيح يُرفض (403)
+    supplied = request.headers.get("x-telegram-bot-api-secret-token", "")
+    expected = hashlib.sha256(
+        f"yjdownload-local-webhook-v1\0{settings.telegram_bot_token}".encode("utf-8")
+    ).hexdigest()
+    if not hmac.compare_digest(supplied, expected):
+        raise HTTPException(403, "Invalid webhook secret")
     try:
         data = await request.json()
         update = Update.de_json(data, await webhook_bot())
@@ -105,6 +137,32 @@ async def telegram_webhook(request: Request):
         log.exception("webhook failed")
         return {'ok': False, 'error': str(e)[:200]}
     return {'ok': True}
+
+@app.get('/api/telegram/status')
+async def telegram_status(repair: bool = False, drop_pending: bool = False):
+    """فحص وإصلاح الويب هوك (للوضع غير المحلي)."""
+    from telegram import Bot
+    bot = Bot(token=settings.telegram_bot_token)
+    try:
+        if repair:
+            await bot.set_webhook(
+                url=f"{settings.base_url.rstrip('/')}/webhook/telegram",
+                secret_token=hashlib.sha256(
+                    f"yjdownload-local-webhook-v1\0{settings.telegram_bot_token}".encode("utf-8")
+                ).hexdigest(),
+                allowed_updates=["message", "edited_message", "callback_query"],
+                drop_pending_updates=bool(drop_pending),
+            )
+        info = await bot.get_webhook_info()
+        return {
+            "configured": True,
+            "url": info.url,
+            "pending_update_count": info.pending_update_count,
+            "last_error": str(info.last_error_message or "")[:200],
+            "repaired": repair,
+        }
+    except Exception as e:  # noqa: BLE001
+        return {"configured": False, "error": str(e)[:200]}
 
 @app.get('/api/health')
 def health():

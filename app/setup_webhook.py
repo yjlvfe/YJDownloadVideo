@@ -1,9 +1,9 @@
 """
-ربط Webhook تيليجرام بعد نشر Vercel — يُشغَّل مرة واحدة من جهازك:
+ربط Webhook تيليجرام (للوضع غير المحلي) — يُشغَّل مرة واحدة:
 
-    WEBHOOK_URL=https://<مشروعك>.vercel.app/webhook/telegram uv run python -m app.setup_webhook
+    WEBHOOK_URL=https://<عنوانك>/webhook/telegram uv run python -m app.setup_webhook
 """
-import asyncio, os
+import asyncio, hashlib, os
 
 from telegram import Bot
 
@@ -13,12 +13,18 @@ async def main():
     url = os.environ.get("WEBHOOK_URL")
     if not token or not url:
         raise SystemExit("ضع TELEGRAM_BOT_TOKEN و WEBHOOK_URL ثم أعد التشغيل")
+    secret = hashlib.sha256(f"yjdownload-local-webhook-v1\0{token}".encode("utf-8")).hexdigest()
     bot = Bot(token)
-    ok = await bot.set_webhook(url)
+    ok = await bot.set_webhook(
+        url=url,
+        secret_token=secret,
+        allowed_updates=["message", "edited_message", "callback_query"],
+        drop_pending_updates=True,
+    )
     info = await bot.get_webhook_info()
     print("✅ تم ربط الويب هوك:", ok)
     print("   العنوان:", info.url)
-    print("   ملاحظة: في وضع Vercel حد الإرسال 50MB (بدون خادم محلي) — المقاطع الأصغر تصل مباشرة.")
+    print("   سر التوقيع: مفعل")
 
 
 if __name__ == "__main__":

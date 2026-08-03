@@ -1,8 +1,8 @@
-import asyncio, secrets, logging, subprocess, os
+import asyncio, secrets, logging, os, time, shutil
 from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
-from .config import settings, ffmpeg_location
+from .config import settings
 from .db import init_db, SessionLocal, Job, utcnow
 from .security import validate_public_url
 from .worker import process_job
@@ -151,78 +151,149 @@ async def video_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _set_pref(update.effective_user.id, "video")
     await update.message.reply_text("🎬 وضع الفيديو مفعل — المقاطع القادمة ستُرسل كفيديو كامل.")
 
-async def on_mp3_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """زر MP3 🎧 تحت المقطع: يحوّل الفيديو إلى MP3 ويرسله."""
+# ============================================================
+# نظام اختيار التحميل (فيديو/صوت/دقة) — بدل زر MP3
+# ============================================================
+
+PENDING: dict[str, dict] = {}      # nonce -> {user_id, chat_id, url, created}
+_PICK_TTL = 180                     # 3 دقائق لاتخاذ القرار
+_VALID_QUALITIES = {"best", "1080", "720", "480", "audio"}
+
+_QUALITY_LABELS = {"best": "⭐ الأفضل", "audio": "🎵 صوت", "1080": "1080p",
+                   "720": "720p", "480": "480p"}
+
+
+def delete_job_files(job) -> None:
+    """🗑️ حذف فوري لملف المهمة ومجلدها وتحديث الصف (نقطة عدم التكدس)."""
+    try:
+        folder = Path(job.file_path).parent if job.file_path else None
+        if job.file_path:
+            Path(job.file_path).unlink(missing_ok=True)
+        if folder:
+            shutil.rmtree(folder, ignore_errors=True)
+        with SessionLocal() as db:
+            row = db.get(Job, job.id)
+            if row:
+                row.file_path = None
+                row.file_size = None
+                db.commit()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _cleanup_pending() -> None:
+    now = time.time()
+    for key in [k for k, v in PENDING.items() if now - v["created"] > _PICK_TTL]:
+        PENDING.pop(key, None)
+
+
+def _pick_kb(buttons: list[list[tuple[str, str]]]) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(label, callback_data=cb) for label, cb in row]
+        for row in buttons
+    ])
+
+
+async def _ask_choice(chat_id: int, user_id: int, url: str, context) -> None:
+    """يعرض أزرار فيديو/صوت/إلغاء للرابط المعلّق."""
+    _cleanup_pending()
+    nonce = secrets.token_urlsafe(8)
+    PENDING[nonce] = {"user_id": user_id, "chat_id": chat_id,
+                      "url": url, "created": time.time()}
+    kb = _pick_kb([
+        [("🎬 فيديو", f"pick:v:{nonce}"), ("🎵 صوت", f"pick:a:{nonce}")],
+        [("❌ إلغاء", f"pick:x:{nonce}")],
+    ])
+    try:
+        await context.bot.send_message(chat_id, "🎯 اختر نوع التحميل:", reply_markup=kb)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+async def on_pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """يعالج اختيار المستخدم: فيديو ← جودات، صوت ← مباشرة، إلغاء."""
     query = update.callback_query
     data = query.data or ""
-    if not data.startswith("mp3:"):
+    if not data.startswith("pick:"):
         await query.answer()
         return
-    jid = data[4:]
-    user_id = query.from_user.id if query.from_user else None
+    parts = data.split(":")
+    if len(parts) < 3:
+        await query.answer("❌ اختيار غير صالح")
+        return
+    kind, nonce = parts[1], parts[2]
+    pending = PENDING.get(nonce)
+    if not pending:
+        await query.answer("⏳ انتهى وقت الاختيار — أرسل الرابط مجددًا.", show_alert=True)
+        return
+    if pending["user_id"] != query.from_user.id:
+        await query.answer("❌ هذا الاختيار لصاحب الطلب فقط.", show_alert=True)
+        return
+    if time.time() - pending["created"] > _PICK_TTL:
+        PENDING.pop(nonce, None)
+        await query.answer("⏳ انتهى وقت الاختيار — أرسل الرابط مجددًا.", show_alert=True)
+        return
 
+    if kind == "x":
+        PENDING.pop(nonce, None)
+        await query.answer("تم الإلغاء ✅")
+        try:
+            await query.message.delete()
+        except Exception:  # noqa: BLE001
+            pass
+        return
+
+    if kind == "v":
+        kb = _pick_kb([
+            [("⭐ الأفضل", f"pick:q:{nonce}:best"), ("1080p", f"pick:q:{nonce}:1080")],
+            [("720p", f"pick:q:{nonce}:720"), ("480p", f"pick:q:{nonce}:480")],
+            [("❌ إلغاء", f"pick:x:{nonce}")],
+        ])
+        await query.answer()
+        try:
+            await query.message.edit_text("🎬 اختر دقة الفيديو:", reply_markup=kb)
+        except Exception:  # noqa: BLE001
+            pass
+        return
+
+    if kind == "a":
+        fmt = "audio"
+    elif kind == "q" and len(parts) >= 4 and parts[3] in _VALID_QUALITIES - {"audio"}:
+        fmt = parts[3]
+    else:
+        await query.answer("❌ اختيار غير صالح")
+        return
+
+    # إنشاء المهمة بالجودة المختارة
+    PENDING.pop(nonce, None)
+    url = pending["url"]
+    user_key = f"tg:{pending['user_id']}"
     with SessionLocal() as db:
-        j = db.get(Job, jid)
-        if not j or not j.file_path or not Path(j.file_path).is_file():
-            await query.answer("❌ الملف لم يعد متوفرًا (انتهت صلاحيته).", show_alert=True)
-            return
-        owner = j.owner_key or ""
-        if owner.startswith("tg:") and str(user_id) != owner[3:]:
-            await query.answer("❌ هذا الزر لصاحب الطلب فقط.", show_alert=True)
-            return
-        path = Path(j.file_path)
-        title = j.title or "مقطع"
-        chat_id = query.message.chat_id if query.message else None
-    if not chat_id:
-        await query.answer()
-        return
+        queue_pos = db.query(Job).filter(
+            Job.owner_key == user_key,
+            Job.status.in_(["waiting", "downloading", "preparing"]),
+        ).count() + 1
+        job = Job(id=secrets.token_urlsafe(16), url=url, requested_format=fmt,
+                  status="waiting", owner_key=user_key, source="telegram")
+        db.add(job)
+        db.commit()
+        jid = job.id
 
-    await query.answer("🎧 جارٍ التحويل إلى MP3…")
-    bot = _bot_instance()
-    status_msg = None
+    label = _QUALITY_LABELS.get(fmt, fmt)
+    await query.answer("تم ✅")
     try:
-        # فحص وجود صوت أولًا — بعض المقاطع (تيك توك أحيانًا) بدون صوت
-        probe = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "a",
-             "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(path)],
-            capture_output=True, text=True, timeout=30,
-        )
-        if not probe.stdout.strip():
-            await query.answer("🔇 هذا المقطع بدون صوت — لا يمكن تحويله لـ MP3.", show_alert=True)
-            return
-        status_msg = await bot.send_message(chat_id, "🎧 جارٍ التحويل إلى MP3…")
-        out = path.with_suffix(".mp3")
-        ffmpeg = ffmpeg_location()
-        # تحويل الصوت فقط بجودة عالية
-        def convert():
-            subprocess.run(
-                [ffmpeg, "-y", "-i", str(path), "-vn", "-codec:a", "libmp3lame",
-                 "-q:a", "2", "-map_metadata", "0", str(out)],
-                capture_output=True, timeout=600, check=True,
-            )
-        await asyncio.to_thread(convert)
-        if not out.is_file() or out.stat().st_size == 0:
-            raise RuntimeError("فشل التحويل")
-        await bot.send_chat_action(chat_id, "upload_audio")
-        from telegram import InputFile
-        with open(out, "rb") as f:
-            await bot.send_audio(chat_id, InputFile(f, read_file_handle=False),
-                                 caption=f"🎵 {title[:1024]}")
-        if status_msg is not None:
-            try:
-                await status_msg.delete()
-            except Exception:  # noqa: BLE001
-                pass
-    except Exception as e:  # noqa: BLE001
-        log.exception("mp3 conversion failed")
-        text = f"❌ تعذر التحويل إلى MP3: {str(e)[:150]}"
-        if status_msg is not None:
-            try:
-                await status_msg.edit_text(text)
-            except Exception:  # noqa: BLE001
-                await bot.send_message(chat_id, text)
-        else:
-            await bot.send_message(chat_id, text)
+        await query.message.delete()
+    except Exception:  # noqa: BLE001
+        pass
+    chat_id = pending["chat_id"]
+    if queue_pos == 1:
+        await context.bot.send_message(chat_id, f"📥 تم الاستلام ({label}) — جارٍ المعالجة…")
+    else:
+        await context.bot.send_message(chat_id, f"📥 تمت الإضافة للطابور — موضعك #{queue_pos} ({label})")
+    if WEBHOOK_MODE:
+        await watch_and_deliver(chat_id, jid)
+    else:
+        asyncio.create_task(watch_and_deliver(chat_id, jid))
 
 
 async def receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -230,36 +301,15 @@ async def receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await handle_login_text(update, context):
         return
     url = (update.message.text or "").strip()
-    user_key = f"tg:{update.effective_user.id}"
     try:
         validate_public_url(url)
     except ValueError as e:
         await update.message.reply_text(f"⚠️ {e}")
         return
 
-    with SessionLocal() as db:
-        # طابور: عدد مهامك النشطة = موقعك في الطابور (لا رفض — الكل ينتظر دوره)
-        queue_pos = db.query(Job).filter(
-            Job.owner_key == user_key,
-            Job.status.in_(["waiting", "downloading", "preparing"]),
-        ).count() + 1
-        j = Job(
-            id=secrets.token_urlsafe(16), url=url,
-            requested_format="audio" if _pref_mode(update.effective_user.id) == "audio" else "best",
-            status="waiting", owner_key=user_key, source="telegram",
-        )
-        db.add(j); db.commit(); jid = j.id
-
-    mode = _pref_mode(update.effective_user.id)
-    if queue_pos == 1:
-        await update.message.reply_text(f"📥 تم استلام الرابط، جارٍ المعالجة… ({'🎵 صوت' if mode == 'audio' else '🎬 فيديو'})")
-    else:
-        await update.message.reply_text(f"📥 تمت إضافة الرابط إلى الطابور — موضعك #{queue_pos} ({'🎵 صوت' if mode == 'audio' else '🎬 فيديو'})")
-    if WEBHOOK_MODE:
-        # على Vercel: التنفيذ فوري داخل الطلب (لا توجد عمليات خلفية دائمة)
-        await watch_and_deliver(update.effective_chat.id, jid)
-    else:
-        asyncio.create_task(watch_and_deliver(update.effective_chat.id, jid))
+    # كل رابط = اختيار: فيديو/صوت/دقة قبل التحميل
+    await update.message.reply_text("📥 تم استلام الرابط…")
+    await _ask_choice(update.effective_chat.id, update.effective_user.id, url, context)
 
 def _make_request(progress_cb=None):
     """مهلات طويلة + تتبع تقدم الرفع (PTB v21 حذف معامل progress من دوال الإرسال)."""
@@ -354,13 +404,12 @@ async def watch_and_deliver(chat_id: int, jid: str):
             # InputFile(read_file_handle=False): يبقي الملف متدفقًا (بدل قراءته كاملًا في الذاكرة)
             # — ضروري لتتبع التقدم ولتفادي استهلاك 2GB رام للملفات الكبيرة
             from telegram import InputFile
-            kb = InlineKeyboardMarkup([[InlineKeyboardButton("MP3 🎧", callback_data=f"mp3:{jid}")]])
             if is_audio:
                 with open(path, "rb") as f:
                     await bot.send_audio(chat_id, InputFile(f, read_file_handle=False), caption=f"🎵 {caption}")
             else:
                 with open(path, "rb") as f:
-                    await bot.send_video(chat_id, InputFile(f, read_file_handle=False), caption=caption, reply_markup=kb)
+                    await bot.send_video(chat_id, InputFile(f, read_file_handle=False), caption=caption)
 
         send_task = asyncio.create_task(do_send())
         last_up = -1
@@ -385,6 +434,9 @@ async def watch_and_deliver(chat_id: int, jid: str):
                 await bar.delete()
             except Exception:  # noqa: BLE001
                 pass
+        # 🗑️ الحذف الفوري — نقطة عدم التكدس: الملف يُمحى لحظة وصوله للمستخدم
+        if j and j.source == "telegram":
+            delete_job_files(j)
         clear_status(jid)
         return
     elif state == "failed":
@@ -422,7 +474,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("unlink2gb", unlink2gb))
     app.add_handler(CommandHandler("audio", audio_mode))
     app.add_handler(CommandHandler("video", video_mode))
-    app.add_handler(CallbackQueryHandler(on_mp3_button, pattern=r"^mp3:"))
+    app.add_handler(CallbackQueryHandler(on_pick_callback, pattern=r"^pick:"))
     # ملاحظة: filters.Document كلاس في PTB v21 ويكسر المعالج — استخدم filters.ATTACHMENT (نسخة جاهزة)
     app.add_handler(MessageHandler(filters.ATTACHMENT, receive_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive))

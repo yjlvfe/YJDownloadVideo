@@ -10,6 +10,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_DATABASE_URL = "sqlite+aiosqlite:///./data/yjdownload.db"
 DEFAULT_BASE_URL = "http://localhost:8000"
+DEFAULT_REMOTE_WORKER_URL = "https://yjvideodownloads.onrender.com"
 VERCEL_RUNTIME = os.getenv("VERCEL") == "1"
 
 
@@ -20,6 +21,7 @@ class Settings(BaseSettings):
     database_url: str = DEFAULT_DATABASE_URL
     redis_url: str = "redis://localhost:6379/0"
     base_url: str = DEFAULT_BASE_URL
+    remote_worker_url: str = DEFAULT_REMOTE_WORKER_URL
     storage_dir: str = "./storage"
     file_ttl_seconds: int = 0
     max_file_size_bytes: int = 2_000_000_000

@@ -1,10 +1,9 @@
-name: Vercel Media Flow
+name: Repository Test Suite
 
 on:
   push:
     branches:
       - main
-      - fix/vercel-only-media-choice-20260803
   pull_request:
     branches:
       - main
@@ -15,7 +14,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -24,12 +23,7 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: pip install -r requirements.txt
-      - name: Test Vercel-only flow
-        run: >-
-          pytest -q
-          tests/test_vercel_media_flow.py
-          tests/test_vercel_runtime.py
-          tests/test_vercel_only_main.py
-          tests/test_vercel_only_config.py
+      - name: Run complete test suite
+        run: PYTHONPATH=. pytest -q
       - name: Compile application
-        run: python -m compileall -q app
+        run: PYTHONPATH=. python -m compileall -q app

@@ -6,8 +6,6 @@ set -eu
 : "${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}"
 
 PORT="${PORT:-10000}"
-# This service always runs its own Bot API server. Never allow an old cloud
-# endpoint environment variable to redirect readiness checks away from localhost.
 LOCAL_API="http://127.0.0.1:8081"
 WORK_DIR="${TELEGRAM_WORK_DIR:-/tmp/telegram-bot-api-data}"
 TEMP_DIR="${TELEGRAM_TEMP_DIR:-/tmp/telegram-bot-api-temp}"
@@ -46,10 +44,13 @@ rm -rf \
   2>/dev/null || true
 mkdir -p /app/storage /app/data "$WORK_DIR" "$TEMP_DIR"
 
-# Move the bot away from Telegram's hosted Bot API before opening the local one.
-curl -sS --max-time 30 -X POST \
-  "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/logOut" \
-  >/dev/null 2>&1 || true
+# Logging out of Telegram's hosted Bot API is destructive and rate-limited.
+# Keep it as an explicit recovery switch rather than doing it on every deploy.
+if [ "${TELEGRAM_FORCE_LOGOUT_ON_START:-0}" = "1" ]; then
+  curl -sS --max-time 30 -X POST \
+    "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/logOut" \
+    >/dev/null 2>&1 || true
+fi
 
 telegram-bot-api \
   --api-id="${TELEGRAM_API_ID}" \
@@ -59,7 +60,7 @@ telegram-bot-api \
   --http-port=8081 \
   --http-ip-address=127.0.0.1 \
   --local \
-  --verbosity="${TELEGRAM_VERBOSITY:-3}" \
+  --verbosity="${TELEGRAM_VERBOSITY:-0}" \
   >"$TBA_LOG" 2>&1 &
 TBA_PID=$!
 
@@ -80,9 +81,9 @@ for _ in $(seq 1 120); do
     show_tba_diagnostics
     exit 1
   fi
-  if curl -fsS --max-time 3 \
-      "${LOCAL_API}/bot${TELEGRAM_BOT_TOKEN}/getMe" \
-      >"$TBA_CHECK" 2>&1; then
+  # Any HTTP response proves the listener is alive. Never poll getMe here:
+  # authenticated readiness checks can rate-limit the entire bot during deploys.
+  if curl -sS --max-time 2 -o /dev/null "${LOCAL_API}/" 2>"$TBA_CHECK"; then
     ready=true
     break
   fi
@@ -118,17 +119,9 @@ if [ "$app_ready" != "true" ]; then
   exit 1
 fi
 
-WEBHOOK_URL="${TELEGRAM_WEBHOOK_URL:-}"
-if [ -z "$WEBHOOK_URL" ] && [ -n "${RENDER_EXTERNAL_URL:-}" ]; then
-  WEBHOOK_URL="${RENDER_EXTERNAL_URL%/}/webhook/telegram"
-fi
-if [ -z "$WEBHOOK_URL" ] && [ -n "${RENDER_EXTERNAL_HOSTNAME:-}" ]; then
-  WEBHOOK_URL="https://${RENDER_EXTERNAL_HOSTNAME}/webhook/telegram"
-fi
-if [ -z "$WEBHOOK_URL" ]; then
-  echo "TELEGRAM_WEBHOOK_URL is required" >&2
-  exit 1
-fi
+# Telegram must keep calling the thin Vercel ingress; Vercel then forwards the
+# signed update to this Render worker. An environment value can override it.
+WEBHOOK_URL="${TELEGRAM_WEBHOOK_URL:-https://yj-download-video.vercel.app/webhook/telegram}"
 export TELEGRAM_WEBHOOK_URL="$WEBHOOK_URL"
 
 WEBHOOK_SECRET=$(python - <<'PY'
@@ -139,12 +132,16 @@ print(hashlib.sha256(material.encode()).hexdigest(), end="")
 PY
 )
 
-curl -fsS --max-time 30 -X POST \
+# A temporary Telegram 429 must not take the whole worker offline. The status
+# endpoint can repair the webhook after the retry window expires.
+if ! curl -fsS --max-time 30 -X POST \
   "${LOCAL_API}/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
   --data-urlencode "url=${WEBHOOK_URL}" \
   --data-urlencode "secret_token=${WEBHOOK_SECRET}" \
   --data-urlencode 'allowed_updates=["message","edited_message","callback_query"]' \
   --data-urlencode "max_connections=10" \
-  >/dev/null
+  >/dev/null; then
+  echo "Telegram webhook setup deferred; repair it through /api/telegram/status" >&2
+fi
 
 wait "$APP_PID"

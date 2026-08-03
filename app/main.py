@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import json
 import logging
 import os
 import re
@@ -10,7 +11,7 @@ import secrets
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -18,7 +19,7 @@ from .config import ffmpeg_location, javascript_runtime_options, settings
 from .db import Job, SessionLocal, init_db
 from .platform_runtime import install_runtime_patches
 from .security import read_token, validate_public_url
-from .telegram_api import TelegramAPI
+from .telegram_api import TelegramAPI, TelegramAPIError
 
 install_runtime_patches()
 
@@ -140,6 +141,9 @@ def inspect(data: InspectRequest) -> dict:
 
 @app.post("/api/jobs")
 def create_job(data: CreateRequest, request: Request) -> dict:
+    if settings.vercel_mode:
+        raise HTTPException(503, "معالجة الملفات متاحة على خادم Render فقط")
+
     url = validate_public_url(data.url)
     key = owner(request)
     with SessionLocal() as db:
@@ -160,10 +164,6 @@ def create_job(data: CreateRequest, request: Request) -> dict:
         db.commit()
         db.refresh(job)
         job_id = job.id
-    if settings.vercel_mode:
-        process_inline(job_id)
-        with SessionLocal() as db:
-            return job_json(db.get(Job, job_id))
     try:
         import redis
         redis.Redis.from_url(settings.redis_url).rpush("yjdownload:jobs", job_id)
@@ -204,16 +204,22 @@ def download(token: str):
         )
 
 
+async def _telegram_status_call(method: str, payload: dict) -> dict:
+    if settings.vercel_mode:
+        from .remote_worker import telegram_call
+        return await telegram_call(method, payload)
+    return await _telegram_api().call(method, payload)
+
+
 @app.get("/api/telegram/status")
 async def telegram_status(repair: bool = False, drop_pending: bool = False) -> dict:
     if not settings.telegram_bot_token:
         return {"configured": False, "connected": False}
-    api = _telegram_api()
     expected_url = telegram_webhook_url()
     repaired = False
     try:
         if repair:
-            await api.call(
+            await _telegram_status_call(
                 "setWebhook",
                 {
                     "url": expected_url,
@@ -224,7 +230,7 @@ async def telegram_status(repair: bool = False, drop_pending: bool = False) -> d
                 },
             )
             repaired = True
-        info = await api.call("getWebhookInfo", {})
+        info = await _telegram_status_call("getWebhookInfo", {})
     except Exception as exc:  # noqa: BLE001
         return {
             "configured": True,
@@ -256,8 +262,83 @@ async def telegram_webhook(request: Request) -> dict:
         data = await request.json()
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(400, "Invalid Telegram update") from exc
+    if not isinstance(data, dict):
+        raise HTTPException(400, "Invalid Telegram update")
+
+    if settings.vercel_mode:
+        from .remote_worker import RemoteWorkerError, forward_telegram_update
+        try:
+            await forward_telegram_update(data)
+        except RemoteWorkerError as exc:
+            raise HTTPException(503, str(exc)) from exc
+        return {"ok": True, "delivery": "render-2gb"}
+
     asyncio.create_task(get_telegram_flow().handle_update(data))
-    return {"ok": True}
+    return {"ok": True, "delivery": "local"}
+
+
+@app.post("/telegram/update", status_code=202)
+async def worker_telegram_update(request: Request) -> dict:
+    if settings.vercel_mode:
+        raise HTTPException(404, "Not found")
+    if not settings.telegram_bot_token:
+        raise HTTPException(503, "Telegram bot is not configured")
+
+    raw = await request.body()
+    signature = request.headers.get("x-telegram-worker-auth", "")
+    from .remote_worker import verify_worker_signature
+    if not verify_worker_signature(
+        settings.telegram_bot_token,
+        raw,
+        signature,
+        "telegram-update",
+    ):
+        raise HTTPException(401, "Invalid worker signature")
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HTTPException(400, "Invalid Telegram update") from exc
+    if not isinstance(data, dict):
+        raise HTTPException(400, "Invalid Telegram update")
+
+    asyncio.create_task(get_telegram_flow().handle_update(data))
+    return {"ok": True, "accepted": True}
+
+
+@app.post("/telegram/call/{method}")
+async def worker_telegram_call(method: str, request: Request):
+    if settings.vercel_mode:
+        raise HTTPException(404, "Not found")
+    if not settings.telegram_bot_token:
+        raise HTTPException(503, "Telegram bot is not configured")
+
+    raw = await request.body()
+    signature = request.headers.get("x-telegram-worker-auth", "")
+    from .remote_worker import ALLOWED_TELEGRAM_METHODS, verify_worker_signature
+    if method not in ALLOWED_TELEGRAM_METHODS:
+        raise HTTPException(404, "Unsupported Telegram method")
+    if not verify_worker_signature(
+        settings.telegram_bot_token,
+        raw,
+        signature,
+        f"telegram-call:{method}",
+    ):
+        raise HTTPException(401, "Invalid worker signature")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HTTPException(400, "Invalid Telegram payload") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Invalid Telegram payload")
+
+    try:
+        result = await _telegram_api().call(method, payload)
+    except TelegramAPIError as exc:
+        return JSONResponse(
+            status_code=502,
+            content={"ok": False, "description": str(exc)[:200]},
+        )
+    return {"ok": True, "result": result}
 
 
 def _storage_stats() -> tuple[int, int]:
@@ -279,23 +360,38 @@ async def health() -> dict:
     local_ready = False
     queue_depth = 0
     selection_count = 0
-    if settings.telegram_bot_token:
+    max_file_bytes = settings.telegram_send_limit_bytes
+    retained_count = 0
+    retained_bytes = 0
+
+    if settings.vercel_mode:
+        from .remote_worker import remote_worker_health
+        remote = await remote_worker_health()
+        local_ready = bool(remote.get("ok"))
+        queue_depth = int(remote.get("queueDepth") or 0)
+        selection_count = int(remote.get("selectionCount") or 0)
+        max_file_bytes = int(remote.get("maxFileBytes") or max_file_bytes)
+        retained_count = int(remote.get("retainedMediaCount") or 0)
+        retained_bytes = int(remote.get("retainedMediaBytes") or 0)
+    elif settings.telegram_bot_token:
         try:
             flow = get_telegram_flow()
             queue_depth = flow.queue_depth
             selection_count = flow.selection_count
-            await flow.api.call("getMe", {})
-            local_ready = True
+            local_ready = await flow.api.ready()
         except Exception:  # noqa: BLE001
             local_ready = False
-    retained_count, retained_bytes = _storage_stats()
+        retained_count, retained_bytes = _storage_stats()
+
     ffmpeg_path = Path(ffmpeg_location())
     return {
         "ok": local_ready,
+        "vercel": settings.vercel_mode,
+        "remoteWorkerConfigured": bool(settings.remote_worker_url),
         "localApiReady": local_ready,
         "queueDepth": queue_depth,
         "selectionCount": selection_count,
-        "maxFileBytes": settings.telegram_send_limit_bytes,
+        "maxFileBytes": max_file_bytes,
         "retainedMediaCount": retained_count,
         "retainedMediaBytes": retained_bytes,
         "ffmpegReady": ffmpeg_path.is_file(),

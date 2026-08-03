@@ -3,6 +3,7 @@ FROM aiogram/telegram-bot-api:10.2
 USER root
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    PYTHONPATH="/app" \
     PATH="/opt/venv/bin:${PATH}"
 
 RUN apk add --no-cache \
@@ -19,7 +20,7 @@ COPY . .
 RUN mkdir -p /app/data /app/storage \
     && chmod 0755 /app/docker/start-render.sh \
     && python -m compileall -q app \
-    && pytest -q tests/test_media_choice.py tests/test_telegram_api.py tests/test_telegram_flow.py
+    && python -m pytest -q tests/test_media_choice.py tests/test_telegram_api.py tests/test_telegram_flow.py
 
 EXPOSE 10000
 CMD ["/app/docker/start-render.sh"]

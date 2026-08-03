@@ -65,14 +65,14 @@ class Settings(BaseSettings):
             if not configured.is_absolute():
                 setattr(self, field_name, str(runtime_root / subdirectory))
 
-        # Use Vercel's canonical production domain when BASE_URL was not set.
-        if self.base_url.rstrip("/") == DEFAULT_BASE_URL:
-            production_host = (
-                os.getenv("VERCEL_PROJECT_PRODUCTION_URL")
-                or os.getenv("VERCEL_URL")
-            )
-            if production_host:
-                self.base_url = f"https://{production_host.strip('/')}"
+        # Vercel's canonical production domain is the only reliable callback URL.
+        # This intentionally replaces stale VPS/IP BASE_URL values in Vercel mode.
+        production_host = (
+            os.getenv("VERCEL_PROJECT_PRODUCTION_URL")
+            or os.getenv("VERCEL_URL")
+        )
+        if production_host:
+            self.base_url = f"https://{production_host.strip('/')}"
 
         # Chromium is not bundled in the Vercel Python runtime.
         self.enable_browser_capture = False

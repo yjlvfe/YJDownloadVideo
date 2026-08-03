@@ -9,6 +9,7 @@ from typing import Any
 
 from .config import settings
 from .job_queue import DurableSelectionStore, JobQueue, QueueJob
+from .media_choice import QualityOption, normalize_qualities, quality_options
 
 
 _QUEUE: JobQueue | None = None
@@ -20,6 +21,45 @@ def get_job_queue() -> JobQueue:
     if _QUEUE is None:
         _QUEUE = JobQueue(settings.db_path)
     return _QUEUE
+
+
+def actual_video_qualities(raw_formats: list[dict[str, Any]] | None) -> list[QualityOption]:
+    """Return truthful buttons: best plus only heights reported by inspection."""
+    best = quality_options()[0]
+    dynamic = [item for item in normalize_qualities(raw_formats) if item.key != "original"]
+    dynamic.sort(key=lambda item: int(item.key), reverse=True)
+    return [best, *dynamic]
+
+
+def quality_payloads(qualities: list[QualityOption]) -> list[dict[str, Any]]:
+    return [
+        {
+            "key": item.key,
+            "label": item.label,
+            "selector": item.selector,
+            "size": item.size,
+        }
+        for item in qualities
+    ]
+
+
+def qualities_from_payloads(payloads: Any) -> list[QualityOption]:
+    result: list[QualityOption] = []
+    for value in payloads if isinstance(payloads, list) else []:
+        if not isinstance(value, dict):
+            continue
+        try:
+            result.append(
+                QualityOption(
+                    key=str(value["key"]),
+                    label=str(value["label"]),
+                    selector=str(value["selector"]),
+                    size=int(value["size"]) if value.get("size") is not None else None,
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return result
 
 
 class RecoverableSelectionStore(DurableSelectionStore):
@@ -45,7 +85,6 @@ def install_durable_flow_patches(queue: JobQueue | None = None) -> None:
 
     queue = queue or get_job_queue()
     original_handle_update = telegram_flow.TelegramFlow.handle_update
-    original_handle_callback = telegram_flow.TelegramFlow._handle_callback
 
     def preserve_runtime_storage(self: Any) -> None:
         Path(self.settings.storage_path).mkdir(parents=True, exist_ok=True)
@@ -57,17 +96,111 @@ def install_durable_flow_patches(queue: JobQueue | None = None) -> None:
         )
 
     async def handle_update(self: Any, data: dict[str, Any]) -> None:
+        # Durable queue owns update-id dedupe. Remove the in-memory dedupe input so
+        # a recovered lease cannot be silently skipped in the same process.
         self._durable_update_id = data.get("update_id")
+        replay_safe_data = dict(data)
+        replay_safe_data.pop("update_id", None)
         try:
-            await original_handle_update(self, data)
+            await original_handle_update(self, replay_safe_data)
         finally:
             self._durable_update_id = None
 
     async def handle_callback(self: Any, callback: dict[str, Any]) -> None:
         parsed = telegram_flow.parse_callback(str(callback.get("data") or ""))
-        self._durable_selection_token = parsed[1] if parsed else None
+        if parsed is None:
+            return
+        callback_id = str(callback.get("id") or "")
+        owner_id = (callback.get("from") or {}).get("id")
+        message = callback.get("message") or {}
+        chat_id = (message.get("chat") or {}).get("id")
+        message_id = message.get("message_id")
+        if not isinstance(owner_id, int) or not isinstance(chat_id, int) or not isinstance(message_id, int):
+            return
+
+        action, token, quality_key = parsed
+        session = self.selections.get(token, owner_id)
+        if session is None:
+            await self.api.answer_callback_query(
+                callback_id,
+                "❌ انتهت صلاحية الاختيار أو أنه ليس لك.",
+                show_alert=True,
+            )
+            return
+        await self.api.answer_callback_query(callback_id)
+
+        if action == "video":
+            try:
+                await self._safe_edit(
+                    chat_id,
+                    message_id,
+                    telegram_flow.progress_text("inspecting", 0),
+                )
+                inspected = await self._inspect_with_progress(
+                    chat_id,
+                    message_id,
+                    str(session["url"]),
+                )
+                qualities = actual_video_qualities(inspected.get("formats"))
+                replacement_token = self.selections.create(
+                    owner_id=owner_id,
+                    value={
+                        "url": str(session["url"]),
+                        "title": str(inspected.get("title") or session.get("title") or ""),
+                        "thumbnail": str(inspected.get("thumbnail") or ""),
+                        "qualities": quality_payloads(qualities),
+                    },
+                )
+                if hasattr(self.selections, "delete"):
+                    self.selections.delete(token, owner_id)
+                await self.api.edit_message_text(
+                    chat_id,
+                    message_id,
+                    "🎯 اختر الجودة المتاحة:",
+                    reply_markup=telegram_flow.quality_keyboard(replacement_token, qualities),
+                )
+            except Exception as exc:  # noqa: BLE001
+                await self._safe_edit(
+                    chat_id,
+                    message_id,
+                    f"❌ تعذر فحص الجودات: {self._safe_error(exc)}",
+                )
+            return
+
+        self._durable_selection_token = token
         try:
-            await original_handle_callback(self, callback)
+            if action == "audio":
+                self.selections.pop(token, owner_id)
+                await self._safe_delete(chat_id, message_id)
+                await self._enqueue(
+                    chat_id=chat_id,
+                    owner_id=owner_id,
+                    url=str(session["url"]),
+                    title=str(session.get("title") or ""),
+                    kind="audio",
+                    selector="audio",
+                )
+                return
+
+            qualities = qualities_from_payloads(session.get("qualities"))
+            selected = next((item for item in qualities if item.key == quality_key), None)
+            if selected is None:
+                await self.api.answer_callback_query(
+                    callback_id,
+                    "❌ هذه الجودة لم تعد متاحة.",
+                    show_alert=True,
+                )
+                return
+            self.selections.pop(token, owner_id)
+            await self._safe_delete(chat_id, message_id)
+            await self._enqueue(
+                chat_id=chat_id,
+                owner_id=owner_id,
+                url=str(session["url"]),
+                title=str(session.get("title") or ""),
+                kind="video",
+                selector=selected.selector,
+            )
         finally:
             self._durable_selection_token = None
 

@@ -5,6 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 DEFAULT_DATABASE_URL = "sqlite+aiosqlite:///./data/yjdownload.db"
+DEFAULT_BASE_URL = "http://localhost:8000"
 VERCEL_RUNTIME = os.getenv("VERCEL") == "1"
 
 
@@ -14,14 +15,14 @@ class Settings(BaseSettings):
     secret_key: str = "change-me"
     database_url: str = DEFAULT_DATABASE_URL
     redis_url: str = "redis://localhost:6379/0"
-    base_url: str = "http://localhost:8000"
+    base_url: str = DEFAULT_BASE_URL
     storage_dir: str = "./storage"
     file_ttl_seconds: int = 3600
     max_file_size_bytes: int = 2 * 1024 * 1024 * 1024
     max_duration_seconds: int = 7200
     rate_limit_per_minute: int = 10
     telegram_bot_token: str = ""
-    telegram_bot_api_base: str = ""  # e.g. http://tba:8081 — خادم Bot API محلي (يرفع حد الإرسال إلى 2GB)
+    telegram_bot_api_base: str = ""
     telegram_api_id: int = 0
     telegram_api_hash: str = ""
     sessions_dir: str = "./data/sessions"
@@ -43,14 +44,13 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     def model_post_init(self, __context) -> None:
-        """Apply safe defaults for Vercel's read-only serverless filesystem."""
+        """Apply safe defaults for Vercel's serverless runtime."""
         if not VERCEL_RUNTIME:
             return
 
         self.vercel_mode = True
         runtime_root = Path("/tmp/yjdownload")
 
-        # SQLite and downloaded files must live in Vercel's writable /tmp area.
         if self.database_url == DEFAULT_DATABASE_URL:
             self.database_url = f"sqlite+aiosqlite:///{runtime_root / 'data' / 'yjdownload.db'}"
 
@@ -64,6 +64,15 @@ class Settings(BaseSettings):
             configured = Path(getattr(self, field_name))
             if not configured.is_absolute():
                 setattr(self, field_name, str(runtime_root / subdirectory))
+
+        # Use Vercel's canonical production domain when BASE_URL was not set.
+        if self.base_url.rstrip("/") == DEFAULT_BASE_URL:
+            production_host = (
+                os.getenv("VERCEL_PROJECT_PRODUCTION_URL")
+                or os.getenv("VERCEL_URL")
+            )
+            if production_host:
+                self.base_url = f"https://{production_host.strip('/')}"
 
         # Chromium is not bundled in the Vercel Python runtime.
         self.enable_browser_capture = False
@@ -101,7 +110,7 @@ class Settings(BaseSettings):
 
 
 def ffmpeg_location() -> str:
-    """مسار ffmpeg: الثنائي النظامي أولًا، ثم ثنائي imageio-ffmpeg المدمج (يعمل على Vercel)."""
+    """Return system ffmpeg or the bundled imageio-ffmpeg executable."""
     import shutil
 
     if settings.ffmpeg_bin and shutil.which(settings.ffmpeg_bin):

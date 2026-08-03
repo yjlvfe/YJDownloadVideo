@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -66,9 +65,9 @@ def _common_options(
     options.update(javascript_runtime_options())
     if extractor.cookies_file:
         options["cookiefile"] = extractor.cookies_file
-    if settings.youtube_proxy_url and (not url or _is_youtube_url(url)):
-        options["proxy"] = settings.youtube_proxy_url
-    if not url or _is_youtube_url(url):
+    if _is_youtube_url(url):
+        if settings.youtube_proxy_url:
+            options["proxy"] = settings.youtube_proxy_url
         # One stable client only. Trying several clients after a 429 multiplies
         # the requests from the same blocked Render egress and worsens the ban.
         options["extractor_args"] = {"youtube": {"player_client": ["android"]}}
@@ -109,12 +108,22 @@ def install_runtime_patches() -> None:
         options["retries"] = 1
         options["fragment_retries"] = 1
         options["concurrent_fragment_downloads"] = 1
-        options["extractor_args"] = {"youtube": {"player_client": ["android"]}}
         options["source_address"] = "0.0.0.0"
         options["no_warnings"] = False
         options.update(javascript_runtime_options())
-        if settings.youtube_proxy_url:
-            options["proxy"] = settings.youtube_proxy_url
+
+        active_url = str(getattr(self, "_runtime_url", "") or "")
+        if _is_youtube_url(active_url):
+            options["extractor_args"] = {"youtube": {"player_client": ["android"]}}
+            if settings.youtube_proxy_url:
+                options["proxy"] = settings.youtube_proxy_url
+            else:
+                options.pop("proxy", None)
+        else:
+            # YouTube's proxy/cookies/client identity must never alter TikTok,
+            # Instagram, or generic site downloads.
+            options.pop("proxy", None)
+            options.pop("extractor_args", None)
         return options
 
     def ytdlp_info(self: Any, url: str) -> dict[str, Any]:
@@ -146,54 +155,65 @@ def install_runtime_patches() -> None:
     def download_ytdlp(self: Any, url: str, outdir: Path, preferred: str) -> dict[str, Any]:
         from yt_dlp import YoutubeDL
 
-        if not self.cookies_file:
-            self.cookies_file = cookie_file_for_url(url)
-        if not _is_youtube_url(url):
-            return original_download(self, url, outdir, preferred)
-        if not _YOUTUBE_CIRCUIT.allow_request():
-            raise DownloadError("youtube_circuit_open")
+        previous_url = getattr(self, "_runtime_url", None)
+        self._runtime_url = url
+        try:
+            if not self.cookies_file:
+                self.cookies_file = cookie_file_for_url(url)
+            if not _is_youtube_url(url):
+                return original_download(self, url, outdir, preferred)
+            if not _YOUTUBE_CIRCUIT.allow_request():
+                raise DownloadError("youtube_circuit_open")
 
-        outdir = Path(outdir)
-        outdir.mkdir(parents=True, exist_ok=True)
-        attempt = 0
-        info: dict[str, Any] | None = None
-        while True:
-            options = self._base_ytdlp_opts(outdir, preferred)
-            if attempt:
-                options["outtmpl"] = str(outdir / "%(title).120s_reextract.%(ext)s")
-            try:
-                with YoutubeDL(options) as ydl:
-                    extracted = ydl.extract_info(url, download=True)
-                info = extracted if isinstance(extracted, dict) else {}
-                break
-            except Exception as exc:  # noqa: BLE001
-                classification = classify_youtube_error(exc)
-                if youtube_retry_allowed(classification, attempt):
-                    attempt += 1
-                    continue
-                _YOUTUBE_CIRCUIT.record_failure(classification)
-                raise DownloadError(classification) from exc
+            outdir = Path(outdir)
+            outdir.mkdir(parents=True, exist_ok=True)
+            attempt = 0
+            info: dict[str, Any] | None = None
+            while True:
+                options = self._base_ytdlp_opts(outdir, preferred)
+                if attempt:
+                    options["outtmpl"] = str(outdir / "%(title).120s_reextract.%(ext)s")
+                try:
+                    with YoutubeDL(options) as ydl:
+                        extracted = ydl.extract_info(url, download=True)
+                    info = extracted if isinstance(extracted, dict) else {}
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    classification = classify_youtube_error(exc)
+                    if youtube_retry_allowed(classification, attempt):
+                        attempt += 1
+                        continue
+                    _YOUTUBE_CIRCUIT.record_failure(classification)
+                    raise DownloadError(classification) from exc
 
-        path = _latest_media_file(outdir)
-        if path is None:
-            raise DownloadError("لم يُنشأ ملف")
-        if not _has_audio(path):
-            raise DownloadError("المقطع المتاح بدون صوت")
-        if preferred != "audio" and not _has_video(path):
-            raise DownloadError("المقطع المتاح بدون فيديو")
-        if self.max_duration and info.get("duration") and info["duration"] > self.max_duration:
-            raise DownloadError("مدة الفيديو تتجاوز الحد المسموح")
-        if self.max_filesize and path.stat().st_size > self.max_filesize:
-            raise DownloadError("حجم الفيديو يتجاوز الحد المسموح")
+            path = _latest_media_file(outdir)
+            if path is None:
+                raise DownloadError("لم يُنشأ ملف")
+            if not _has_audio(path):
+                raise DownloadError("المقطع المتاح بدون صوت")
+            if preferred != "audio" and not _has_video(path):
+                raise DownloadError("المقطع المتاح بدون فيديو")
+            if self.max_duration and info.get("duration") and info["duration"] > self.max_duration:
+                raise DownloadError("مدة الفيديو تتجاوز الحد المسموح")
+            if self.max_filesize and path.stat().st_size > self.max_filesize:
+                raise DownloadError("حجم الفيديو يتجاوز الحد المسموح")
 
-        _YOUTUBE_CIRCUIT.record_success()
-        return {
-            "path": str(path),
-            "title": info.get("title") or "",
-            "duration": info.get("duration"),
-            "thumbnail": info.get("thumbnail") or "",
-            "ext": path.suffix.lstrip("."),
-        }
+            _YOUTUBE_CIRCUIT.record_success()
+            return {
+                "path": str(path),
+                "title": info.get("title") or "",
+                "duration": info.get("duration"),
+                "thumbnail": info.get("thumbnail") or "",
+                "ext": path.suffix.lstrip("."),
+            }
+        finally:
+            if previous_url is None:
+                try:
+                    delattr(self, "_runtime_url")
+                except AttributeError:
+                    pass
+            else:
+                self._runtime_url = previous_url
 
     def youtube_fallback(self: Any, url: str, outdir: Path, preferred: str) -> dict[str, Any]:
         if not settings.enable_public_youtube_fallback:

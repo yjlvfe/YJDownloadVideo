@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import json
 import shutil
 import tempfile
 from pathlib import Path
-
-from yt_dlp import YoutubeDL
 
 from .config import settings
 
@@ -47,6 +44,8 @@ def _cookie_file(user_id: int | None) -> str | None:
 
 
 def _download_media(source_url: str, user_id: int | None, workdir: Path) -> tuple[Path, str]:
+    from yt_dlp import YoutubeDL
+
     browser_user_agent = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36"
@@ -81,7 +80,6 @@ def _download_media(source_url: str, user_id: int | None, workdir: Path) -> tupl
 
 
 def _upload_once(method: str, field_name: str, chat_id: int, media_path: Path, caption: str) -> dict:
-    # Import lazily so pure helper tests do not require libcurl bindings.
     from curl_cffi import CurlMime
     from curl_cffi import requests as curl_requests
 
@@ -93,10 +91,7 @@ def _upload_once(method: str, field_name: str, chat_id: int, media_path: Path, c
         filename="video.mp4",
         local_path=str(media_path),
     )
-    form = {
-        "chat_id": str(chat_id),
-        "caption": caption,
-    }
+    form = {"chat_id": str(chat_id), "caption": caption}
     if method == "sendVideo":
         form["supports_streaming"] = "true"
 
@@ -105,7 +100,7 @@ def _upload_once(method: str, field_name: str, chat_id: int, media_path: Path, c
             endpoint,
             data=form,
             multipart=mime,
-            timeout=180,
+            timeout=120,
             http_version="v1",
         )
         try:
@@ -121,8 +116,7 @@ def _upload_once(method: str, field_name: str, chat_id: int, media_path: Path, c
 
 def download_and_upload(chat_id: int, source_url: str, user_id: int | None) -> dict:
     """Download and upload in one Vercel invocation using libcurl multipart."""
-    root = settings.storage_path
-    workdir = Path(tempfile.mkdtemp(prefix="telegram-upload-", dir=str(root)))
+    workdir = Path(tempfile.mkdtemp(prefix="telegram-upload-", dir=str(settings.storage_path)))
     try:
         media_path, title = _download_media(source_url, user_id, workdir)
         try:

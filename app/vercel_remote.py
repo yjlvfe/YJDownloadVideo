@@ -5,10 +5,18 @@ from .security import validate_public_url
 
 
 async def handle_vercel_remote_update(data: dict) -> bool:
-    """Forward URL updates to the persistent 2GB Render worker.
+    """Forward URL and MP3 callback updates to the persistent 2GB worker.
 
-    Vercel only validates metadata and never creates a media file under /tmp.
+    Vercel validates metadata and never creates a media file under /tmp.
     """
+    callback = data.get("callback_query")
+    if isinstance(callback, dict):
+        callback_data = str(callback.get("data") or "").strip()
+        if callback_data.startswith("mp3:"):
+            await forward_telegram_update(data)
+            return True
+        return False
+
     message = data.get("message") or data.get("edited_message")
     if not isinstance(message, dict):
         return False

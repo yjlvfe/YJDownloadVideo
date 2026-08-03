@@ -33,8 +33,10 @@ show_tba_diagnostics() {
   echo "--- End diagnostics ---" >&2
 }
 
+# Never wipe /app/storage at startup: durable queue leases may recover an active
+# job after a deploy. Only process-owned temporary and Telegram API directories
+# are reset here; media cleanup is TTL-aware inside the application.
 rm -rf \
-  /app/storage/* \
   /tmp/yjdownload-* \
   /tmp/yjpreview-* \
   "$WORK_DIR" \
@@ -141,7 +143,7 @@ if ! curl -fsS --max-time 30 -X POST \
   --data-urlencode 'allowed_updates=["message","edited_message","callback_query"]' \
   --data-urlencode "max_connections=10" \
   >/dev/null; then
-  echo "Telegram webhook setup deferred; repair it through /api/telegram/status" >&2
+  echo "Telegram webhook setup deferred; repair it through authenticated admin API" >&2
 fi
 
 wait "$APP_PID"

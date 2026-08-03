@@ -54,6 +54,15 @@ def _quality_label(item: QualityOption) -> str:
     return f"{item.label} • ~{mib:.0f}MB"
 
 
+# جودات جاهزة فورية (بدون فحص الرابط — سريع وخفيف)
+_PRESET_QUALITIES = [
+    QualityOption(key="best", label="⭐ الأفضل", selector="best"),
+    QualityOption(key="1080", label="1080p", selector="1080"),
+    QualityOption(key="720", label="720p", selector="720"),
+    QualityOption(key="480", label="480p", selector="480"),
+]
+
+
 def parse_callback(value: str) -> tuple[str, str, str | None] | None:
     match = _CALLBACK_RE.fullmatch(str(value or ""))
     if not match:
@@ -188,38 +197,16 @@ class TelegramFlow:
             await self.api.send_message(chat_id, f"⚠️ {str(exc)[:180]}")
             return
 
-        status = await self.api.send_message(chat_id, progress_text("inspecting", 0))
-        status_id = int(status.get("message_id") or 0)
-        try:
-            inspection = await self._inspect_with_progress(chat_id, status_id, url)
-            title = str(inspection.get("title") or "مقطع")[:900]
-            qualities = normalize_qualities(inspection.get("formats") or [])
-            token = self.selections.create(
-                owner_id=owner_id,
-                value={
-                    "url": url,
-                    "title": title,
-                    "qualities": qualities,
-                    "thumbnail": str(inspection.get("thumbnail") or ""),
-                },
-            )
-            preview = await self._send_preview(
-                chat_id=chat_id,
-                url=url,
-                title=title,
-                thumbnail=str(inspection.get("thumbnail") or ""),
-                reply_markup=kind_keyboard(token),
-            )
-            if not preview.get("message_id"):
-                raise RuntimeError("لم يستطع تيليجرام إنشاء رسالة المعاينة")
-        except Exception as exc:  # noqa: BLE001
-            await self._safe_edit(
-                chat_id,
-                status_id,
-                f"❌ تعذر قراءة المقطع: {self._safe_error(exc)}",
-            )
-            return
-        await self._safe_delete(chat_id, status_id)
+        # ⚡ اختيار فوري: بدون فحص الرابط وبدون صورة معاينة — أزرار فورًا (سريع وخفيف)
+        token = self.selections.create(
+            owner_id=owner_id,
+            value={"url": url, "title": "", "qualities": [], "thumbnail": ""},
+        )
+        await self.api.send_message(
+            chat_id,
+            "🎯 اختر نوع التحميل:",
+            reply_markup=kind_keyboard(token),
+        )
 
     async def _inspect_with_progress(
         self,
@@ -255,96 +242,6 @@ class TelegramFlow:
         finally:
             extractor.cleanup()
 
-    async def _send_preview(
-        self,
-        *,
-        chat_id: int,
-        url: str,
-        title: str,
-        thumbnail: str,
-        reply_markup: dict[str, Any],
-    ) -> dict[str, Any]:
-        if thumbnail.startswith(("http://", "https://")):
-            try:
-                return await self.api.send_photo(
-                    chat_id,
-                    thumbnail,
-                    caption=title,
-                    reply_markup=reply_markup,
-                )
-            except Exception:  # noqa: BLE001
-                pass
-
-        preview_dir = Path(tempfile.mkdtemp(prefix="yjpreview-", dir=self.settings.storage_path))
-        try:
-            preview_path = await asyncio.to_thread(
-                self._generate_preview_sync,
-                url,
-                preview_dir / "preview.jpg",
-            )
-            return await self.api.send_photo(
-                chat_id,
-                preview_path,
-                caption=title,
-                reply_markup=reply_markup,
-            )
-        finally:
-            cleanup_path(preview_dir)
-
-    def _generate_preview_sync(self, url: str, output: Path) -> Path:
-        from .config import ffmpeg_location
-        from .extractor import UniversalExtractor
-
-        source_url = url
-        extractor = UniversalExtractor(
-            use_browser=bool(self.settings.enable_browser_capture),
-            browser_bin=self.settings.browser_bin,
-            request_timeout=self.settings.request_timeout_seconds,
-        )
-        try:
-            discovery = extractor.discover(url)
-            candidates = discovery.get("candidates") or []
-            if candidates:
-                source_url = str(candidates[0].url)
-        except Exception:  # noqa: BLE001
-            pass
-        finally:
-            extractor.cleanup()
-
-        command = [
-            ffmpeg_location(),
-            "-y",
-            "-ss",
-            "1",
-            "-i",
-            source_url,
-            "-frames:v",
-            "1",
-            "-vf",
-            "scale='min(1280,iw)':-2",
-            str(output),
-        ]
-        try:
-            subprocess.run(command, capture_output=True, timeout=45, check=True)
-        except Exception:  # noqa: BLE001
-            subprocess.run(
-                [
-                    ffmpeg_location(),
-                    "-y",
-                    "-f",
-                    "lavfi",
-                    "-i",
-                    "color=c=0x20242b:s=1280x720",
-                    "-frames:v",
-                    "1",
-                    str(output),
-                ],
-                capture_output=True,
-                timeout=20,
-                check=True,
-            )
-        return output
-
     async def _handle_callback(self, callback: dict[str, Any]) -> None:
         parsed = parse_callback(str(callback.get("data") or ""))
         if parsed is None:
@@ -369,6 +266,9 @@ class TelegramFlow:
         await self.api.answer_callback_query(callback_id)
 
         qualities: list[QualityOption] = list(session.get("qualities") or [])
+        if not qualities:
+            # اختيار فوري: جودات جاهزة بدون فحص الرابط
+            qualities = list(_PRESET_QUALITIES)
         if action == "video":
             await self.api.edit_message_reply_markup(
                 chat_id,
@@ -700,7 +600,8 @@ class TelegramFlow:
         if "drm" in lowered:
             return "المقطع محمي بتشفير DRM ولا يمكن تنزيله."
         if any(value in lowered for value in ("login", "cookie", "forbidden", "403")):
-            return "الموقع يطلب تسجيل دخول أو يمنع التحميل من الخادم."
+            # أضف التفاصيل التقنية لسهولة التشخيص (مثل انتهاء الجلسة أو حجب الخادم)
+            return f"الموقع يطلب تسجيل دخول أو يمنع التحميل من الخادم. ({text[:120]})"
         return text[:220]
 
 

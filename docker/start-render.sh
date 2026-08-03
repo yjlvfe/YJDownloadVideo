@@ -98,6 +98,9 @@ fi
 rm -f "$TBA_CHECK"
 
 export TELEGRAM_BOT_API_BASE="$LOCAL_API"
+# 🎯 حرج: تأكد من أحدث yt-dlp عند كل إقلاع — الإصدارات القديمة تفشل مع يوتيوب/إنستغرام
+# (عيب "player response" و"login required" يختفي مع الإصدار الحديث)
+pip install -q -U yt-dlp >/dev/null 2>&1 || true
 uvicorn app.main:app --host 0.0.0.0 --port "$PORT" &
 APP_PID=$!
 

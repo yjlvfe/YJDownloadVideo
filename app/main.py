@@ -303,7 +303,7 @@ async def telegram_status(repair: bool = False, drop_pending: bool = False) -> d
                 {
                     "url": expected_url,
                     "secret_token": telegram_webhook_secret(),
-                    "allowed_updates": ["message", "edited_message"],
+                    "allowed_updates": ["message", "edited_message", "callback_query"],
                     "drop_pending_updates": bool(drop_pending),
                     "max_connections": 10,
                 },

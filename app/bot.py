@@ -406,10 +406,12 @@ async def watch_and_deliver(chat_id: int, jid: str):
             from telegram import InputFile
             if is_audio:
                 with open(path, "rb") as f:
+                    # الصوت: اسم المقطع في الوصف
                     await bot.send_audio(chat_id, InputFile(f, read_file_handle=False), caption=f"🎵 {caption}")
             else:
                 with open(path, "rb") as f:
-                    await bot.send_video(chat_id, InputFile(f, read_file_handle=False), caption=caption)
+                    # الفيديو: نظيف بدون أي وصف
+                    await bot.send_video(chat_id, InputFile(f, read_file_handle=False))
 
         send_task = asyncio.create_task(do_send())
         last_up = -1

@@ -3,6 +3,10 @@ from pathlib import Path
 
 from app import config
 from app.extractor import UniversalExtractor
+from app.platform_runtime import install_runtime_patches
+
+
+install_runtime_patches()
 
 
 def test_ffmpeg_location_returns_absolute_discovered_binary(monkeypatch):

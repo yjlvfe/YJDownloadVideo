@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import time
 from pathlib import Path
@@ -62,6 +63,41 @@ def qualities_from_payloads(payloads: Any) -> list[QualityOption]:
     return result
 
 
+def active_media_jobs_for_owner(queue: JobQueue, owner_id: int) -> int:
+    with queue._connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT payload_json FROM durable_jobs
+            WHERE kind = 'media_download'
+              AND state IN ('queued', 'claimed', 'retry_wait')
+            """
+        ).fetchall()
+    count = 0
+    for row in rows:
+        try:
+            payload = json.loads(str(row["payload_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict) and payload.get("owner_id") == int(owner_id):
+            count += 1
+    return count
+
+
+def is_retryable_job_error(message: str) -> bool:
+    lowered = str(message or "").lower()
+    terminal_markers = (
+        "youtube_",
+        "drm",
+        "تشفير",
+        "يتجاوز الحد",
+        "غير متاحة",
+        "غير مدعوم",
+        "invalid worker signature",
+        "authentication required",
+    )
+    return not any(marker in lowered for marker in terminal_markers)
+
+
 class RecoverableSelectionStore(DurableSelectionStore):
     """Selection store whose value remains until the media job is durable."""
 
@@ -85,6 +121,7 @@ def install_durable_flow_patches(queue: JobQueue | None = None) -> None:
 
     queue = queue or get_job_queue()
     original_handle_update = telegram_flow.TelegramFlow.handle_update
+    original_process_request = telegram_flow.TelegramFlow._process_request
 
     def preserve_runtime_storage(self: Any) -> None:
         Path(self.settings.storage_path).mkdir(parents=True, exist_ok=True)
@@ -214,6 +251,14 @@ def install_durable_flow_patches(queue: JobQueue | None = None) -> None:
         kind: str,
         selector: str,
     ) -> None:
+        current = await asyncio.to_thread(active_media_jobs_for_owner, queue, owner_id)
+        if current >= int(self.settings.max_active_jobs_per_telegram_user):
+            await self.api.send_message(
+                chat_id,
+                "⚠️ لديك عمليات نشطة كثيرة. انتظر انتهاء إحداها ثم أعد المحاولة.",
+            )
+            return
+
         token = str(getattr(self, "_durable_selection_token", "") or "")
         update_id = getattr(self, "_durable_update_id", None)
         material = f"{token}\0{update_id}\0{kind}\0{selector}\0{url}"
@@ -236,11 +281,34 @@ def install_durable_flow_patches(queue: JobQueue | None = None) -> None:
         if not created:
             await self.api.send_message(chat_id, "ℹ️ هذا الطلب موجود بالفعل في طابور التحميل.")
 
+    async def process_request(self: Any, request: Any) -> None:
+        # The original UI method reports failures to Telegram and swallows them.
+        # Record that message and re-raise after cleanup so the durable queue can
+        # mark retry_wait/failed instead of falsely recording completion.
+        failure_messages: list[str] = []
+        original_safe_edit = self._safe_edit
+
+        async def recording_edit(chat_id: int, message_id: int, text: str) -> None:
+            normalized = str(text or "")
+            prefix = "❌ فشلت العملية:"
+            if normalized.startswith(prefix):
+                failure_messages.append(normalized[len(prefix):].strip())
+            await original_safe_edit(chat_id, message_id, text)
+
+        self._safe_edit = recording_edit
+        try:
+            await original_process_request(self, request)
+        finally:
+            self._safe_edit = original_safe_edit
+        if failure_messages:
+            raise RuntimeError(failure_messages[-1])
+
     telegram_flow.SelectionStore = selection_factory
     telegram_flow.TelegramFlow.clear_runtime_storage = preserve_runtime_storage
     telegram_flow.TelegramFlow.handle_update = handle_update
     telegram_flow.TelegramFlow._handle_callback = handle_callback
     telegram_flow.TelegramFlow._enqueue = enqueue_media
+    telegram_flow.TelegramFlow._process_request = process_request
     _PATCHED = True
 
 
@@ -266,9 +334,16 @@ async def _lease_heartbeat(
 
 async def _dispatch(job: QueueJob) -> None:
     if job.kind == "web_download":
+        from .db import Job, SessionLocal
         from .worker import process_job
 
         await asyncio.to_thread(process_job, str(job.payload["job_id"]))
+        with SessionLocal() as database:
+            web_job = database.get(Job, str(job.payload["job_id"]))
+            if web_job is None:
+                raise RuntimeError("web job disappeared")
+            if web_job.status == "failed":
+                raise RuntimeError(str(web_job.error or "web media job failed"))
         return
 
     from .telegram_flow import DownloadRequest, get_telegram_flow, progress_text
@@ -328,12 +403,13 @@ async def run_durable_worker(
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
-            if job.attempt < 3:
+            message = str(exc).strip() or exc.__class__.__name__
+            if is_retryable_job_error(message) and job.attempt < 3:
                 retry_at = time.time() + min(300, 20 * (2 ** max(0, job.attempt - 1)))
                 await asyncio.to_thread(
                     queue.fail,
                     job.id,
-                    exc.__class__.__name__,
+                    message,
                     retry_at=retry_at,
                     worker_id=worker_id,
                 )
@@ -341,7 +417,7 @@ async def run_durable_worker(
                 await asyncio.to_thread(
                     queue.fail,
                     job.id,
-                    exc.__class__.__name__,
+                    message,
                     worker_id=worker_id,
                 )
         else:

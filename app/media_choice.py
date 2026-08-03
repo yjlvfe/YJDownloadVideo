@@ -17,6 +17,70 @@ class QualityOption:
     size: int | None = None
 
 
+def _bounded_video_selector(height: int) -> str:
+    return (
+        f"bestvideo[height<={height}]+bestaudio/"
+        f"best[height<={height}]"
+    )
+
+
+_QUALITY_REGISTRY: tuple[QualityOption, ...] = (
+    QualityOption(
+        key="best",
+        label="⭐ الأفضل",
+        selector="bestvideo*+bestaudio/best",
+    ),
+    QualityOption(
+        key="1080",
+        label="1080p",
+        selector=_bounded_video_selector(1080),
+    ),
+    QualityOption(
+        key="720",
+        label="720p",
+        selector=_bounded_video_selector(720),
+    ),
+    QualityOption(
+        key="480",
+        label="480p",
+        selector=_bounded_video_selector(480),
+    ),
+    QualityOption(
+        key="audio",
+        label="🎧 صوت MP3",
+        selector="bestaudio/best",
+    ),
+)
+_QUALITY_BY_KEY = {item.key: item for item in _QUALITY_REGISTRY}
+_QUALITY_KEY_BY_SELECTOR = {item.selector: item.key for item in _QUALITY_REGISTRY}
+
+
+def quality_options(*, include_audio: bool = False) -> list[QualityOption]:
+    return [
+        item
+        for item in _QUALITY_REGISTRY
+        if include_audio or item.key != "audio"
+    ]
+
+
+def selector_for_quality(key: str) -> str:
+    option = _QUALITY_BY_KEY.get(str(key or "").strip().lower())
+    if option is None:
+        raise ValueError("unknown quality")
+    return option.selector
+
+
+def quality_key_for_selector(selector: str) -> str | None:
+    return _QUALITY_KEY_BY_SELECTOR.get(str(selector or ""))
+
+
+def is_quality_key(key: str, *, include_audio: bool = False) -> bool:
+    normalized = str(key or "").strip().lower()
+    return normalized in {
+        item.key for item in quality_options(include_audio=include_audio)
+    }
+
+
 def _height_of(item: dict[str, Any]) -> int | None:
     raw = item.get("height")
     if isinstance(raw, (int, float)) and raw > 0:
@@ -39,10 +103,7 @@ def normalize_qualities(raw_formats: list[dict[str, Any]] | None) -> list[Qualit
         candidate = QualityOption(
             key=str(height),
             label=f"{height}p",
-            selector=(
-                f"bestvideo[height<={height}]+bestaudio/"
-                f"best[height<={height}]"
-            ),
+            selector=_bounded_video_selector(height),
             size=size,
         )
         previous = by_height.get(height)
@@ -54,7 +115,7 @@ def normalize_qualities(raw_formats: list[dict[str, Any]] | None) -> list[Qualit
             QualityOption(
                 key="original",
                 label="الجودة الأصلية",
-                selector="bestvideo*+bestaudio/best",
+                selector=selector_for_quality("best"),
                 size=None,
             )
         ]

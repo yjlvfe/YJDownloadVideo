@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import asyncio
 import hashlib
 import hmac
 import logging
@@ -14,13 +17,10 @@ from pydantic import BaseModel, Field
 from .config import settings
 from .db import Job, SessionLocal, init_db
 from .security import read_token, validate_public_url
-from .vercel_runtime import (
-    cleanup_application_storage,
-    install_vercel_runtime_hooks,
-    retained_application_media_stats,
-)
+from .telegram_api import TelegramAPI
+from .telegram_flow import get_telegram_flow
 
-for logger_name in ("httpx", "httpcore", "telegram"):
+for logger_name in ("httpx", "httpcore"):
     logging.getLogger(logger_name).setLevel(logging.WARNING)
 
 log = logging.getLogger("telegram-webhook")
@@ -58,41 +58,31 @@ def job_json(job: Job | None) -> dict:
 
 
 def normalize_formats(raw_formats: list[dict]) -> list[dict]:
-    """Show one option per real resolution and always request audio with video."""
     unique: dict[int, dict] = {}
     for item in raw_formats or []:
         label = str(item.get("label") or "")
-        match = re.match(r"\s*(\d+)p\s*/\s*([^\s]+)", label, re.IGNORECASE)
-        if not match:
+        match = re.search(r"(?<!\d)(\d{2,4})p(?!\d)", label, re.IGNORECASE)
+        height = item.get("height") or (int(match.group(1)) if match else None)
+        if not height:
             continue
-        height = int(match.group(1))
-        size = item.get("size")
-        if size and int(size) > settings.max_file_size_bytes:
-            continue
+        size = item.get("filesize") or item.get("filesize_approx") or item.get("size")
         candidate = {
-            "id": (
-                f"bestvideo[height<={height}]+bestaudio/"
-                f"best[height<={height}]"
-            ),
+            "id": f"bestvideo[height<={height}]+bestaudio/best[height<={height}]",
             "label": f"{height}p",
             "size": size,
         }
-        previous = unique.get(height)
-        previous_size = (previous or {}).get("size") or 0
-        if previous is None or (size or 0) > previous_size:
-            unique[height] = candidate
-
-    quality_options = [unique[key] for key in sorted(unique)]
-    if not quality_options:
-        quality_options = [{"id": "best", "label": "الجودة الأصلية", "size": None}]
-
-    return [
-        *quality_options,
-        {"id": "audio", "label": "صوت MP3", "size": None},
-    ]
+        previous = unique.get(int(height))
+        if previous is None or (size or 0) > (previous.get("size") or 0):
+            unique[int(height)] = candidate
+    if not unique:
+        return [{"id": "bestvideo*+bestaudio/best", "label": "الجودة الأصلية", "size": None}]
+    return [unique[key] for key in sorted(unique)]
 
 
 def telegram_webhook_url() -> str:
+    configured = str(settings.telegram_webhook_url or "").strip()
+    if configured:
+        return configured
     return f"{settings.base_url.rstrip('/')}/webhook/telegram"
 
 
@@ -101,11 +91,16 @@ def telegram_webhook_secret() -> str:
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
+def _telegram_api() -> TelegramAPI:
+    return TelegramAPI(
+        token=settings.telegram_bot_token,
+        base_url=settings.telegram_bot_api_base or "https://api.telegram.org",
+    )
+
+
 @app.on_event("startup")
 def startup() -> None:
     init_db()
-    if settings.vercel_mode:
-        cleanup_application_storage(settings.storage_path)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -130,7 +125,6 @@ def inspect(data: InspectRequest) -> dict:
         raise HTTPException(400, f"تعذر قراءة الفيديو: {str(exc)[:180]}") from exc
     finally:
         extractor.cleanup()
-
     return {
         "title": result.get("title"),
         "thumbnail": result.get("thumbnail"),
@@ -144,31 +138,13 @@ def inspect(data: InspectRequest) -> dict:
 def create_job(data: CreateRequest, request: Request) -> dict:
     url = validate_public_url(data.url)
     key = owner(request)
-
     with SessionLocal() as db:
-        active = (
-            db.query(Job)
-            .filter(
-                Job.owner_key == key,
-                Job.status.in_(["waiting", "downloading", "preparing"]),
-            )
-            .count()
-        )
+        active = db.query(Job).filter(
+            Job.owner_key == key,
+            Job.status.in_(["waiting", "downloading", "preparing"]),
+        ).count()
         if active >= settings.max_active_jobs_per_ip:
             raise HTTPException(429, "لديك عمليات نشطة كثيرة")
-
-        existing = (
-            db.query(Job)
-            .filter(
-                Job.owner_key == key,
-                Job.url == url,
-                Job.status.in_(["waiting", "downloading", "preparing"]),
-            )
-            .first()
-        )
-        if existing:
-            return job_json(existing)
-
         job = Job(
             id=secrets.token_urlsafe(16),
             url=url,
@@ -180,29 +156,21 @@ def create_job(data: CreateRequest, request: Request) -> dict:
         db.commit()
         db.refresh(job)
         job_id = job.id
-
     if settings.vercel_mode:
-        try:
-            process_inline(job_id)
-        except Exception:  # noqa: BLE001
-            pass
+        process_inline(job_id)
         with SessionLocal() as db:
             return job_json(db.get(Job, job_id))
-
     try:
         import redis
-
         redis.Redis.from_url(settings.redis_url).rpush("yjdownload:jobs", job_id)
     except Exception:  # noqa: BLE001
         import threading
-
         threading.Thread(target=process_inline, args=(job_id,), daemon=True).start()
     return job_json(job)
 
 
 def process_inline(job_id: str) -> None:
     from .worker import process_job
-
     process_job(job_id)
 
 
@@ -221,15 +189,9 @@ def download(token: str):
         job_id = read_token(token)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(404, "الرابط منتهي أو غير صالح") from exc
-
     with SessionLocal() as db:
         job = db.get(Job, job_id)
-        if (
-            not job
-            or job.status != "ready"
-            or not job.file_path
-            or not os.path.isfile(job.file_path)
-        ):
+        if not job or job.status != "ready" or not job.file_path or not os.path.isfile(job.file_path):
             raise HTTPException(404, "الملف غير متاح")
         return FileResponse(
             job.file_path,
@@ -240,21 +202,11 @@ def download(token: str):
 
 @app.get("/api/telegram/status")
 async def telegram_status(repair: bool = False, drop_pending: bool = False) -> dict:
-    """Read or repair Telegram directly from this Vercel project."""
     if not settings.telegram_bot_token:
-        return {
-            "configured": False,
-            "connected": False,
-            "repaired": False,
-            "reason": "TELEGRAM_BOT_TOKEN is missing in Vercel environment variables",
-            "expected_url": telegram_webhook_url(),
-        }
-
-    from .vercel_media_flow import TelegramAPI, TelegramAPIError
-
+        return {"configured": False, "connected": False}
+    api = _telegram_api()
     expected_url = telegram_webhook_url()
     repaired = False
-    api = TelegramAPI(settings.telegram_bot_token)
     try:
         if repair:
             await api.call(
@@ -269,7 +221,7 @@ async def telegram_status(repair: bool = False, drop_pending: bool = False) -> d
             )
             repaired = True
         info = await api.call("getWebhookInfo", {})
-    except TelegramAPIError as exc:
+    except Exception as exc:  # noqa: BLE001
         return {
             "configured": True,
             "connected": False,
@@ -277,14 +229,11 @@ async def telegram_status(repair: bool = False, drop_pending: bool = False) -> d
             "expected_url": expected_url,
             "error": str(exc)[:200],
         }
-
-    info = info if isinstance(info, dict) else {}
     current_url = str(info.get("url") or "")
     return {
         "configured": True,
         "connected": current_url.rstrip("/") == expected_url.rstrip("/"),
         "repaired": repaired,
-        "dropped_pending": bool(repair and drop_pending),
         "expected_url": expected_url,
         "current_url": current_url,
         "pending_updates": int(info.get("pending_update_count") or 0),
@@ -294,46 +243,54 @@ async def telegram_status(repair: bool = False, drop_pending: bool = False) -> d
 
 @app.post("/webhook/telegram")
 async def telegram_webhook(request: Request) -> dict:
-    """Process Telegram updates entirely inside the configured Vercel project."""
     if not settings.telegram_bot_token:
         raise HTTPException(503, "Telegram bot is not configured")
-
     supplied_secret = request.headers.get("x-telegram-bot-api-secret-token", "")
     if not hmac.compare_digest(supplied_secret, telegram_webhook_secret()):
         raise HTTPException(403, "Invalid Telegram webhook secret")
-
     try:
         data = await request.json()
-        if settings.vercel_mode:
-            from . import vercel_media_flow
-
-            install_vercel_runtime_hooks(vercel_media_flow)
-            return await vercel_media_flow.handle_update(data)
-
-        from telegram import Update
-        from .bot import handle_update_webhook, webhook_bot
-
-        update = Update.de_json(data, await webhook_bot())
-        if update is not None:
-            await handle_update_webhook(update)
-    except HTTPException:
-        raise
     except Exception as exc:  # noqa: BLE001
-        log.exception("webhook failed")
-        raise HTTPException(503, "Telegram update processing failed") from exc
+        raise HTTPException(400, "Invalid Telegram update") from exc
+    asyncio.create_task(get_telegram_flow().handle_update(data))
     return {"ok": True}
 
 
+def _storage_stats() -> tuple[int, int]:
+    count = 0
+    size = 0
+    for path in settings.storage_path.rglob("*"):
+        if path.is_file():
+            count += 1
+            try:
+                size += path.stat().st_size
+            except OSError:
+                pass
+    return count, size
+
+
+@app.get("/health")
 @app.get("/api/health")
-def health() -> dict:
-    retained_media_count, retained_media_bytes = retained_application_media_stats(
-        settings.storage_path
-    )
+async def health() -> dict:
+    local_ready = False
+    queue_depth = 0
+    selection_count = 0
+    if settings.telegram_bot_token:
+        try:
+            flow = get_telegram_flow()
+            queue_depth = flow.queue_depth
+            selection_count = flow.selection_count
+            await flow.api.call("getMe", {})
+            local_ready = True
+        except Exception:  # noqa: BLE001
+            local_ready = False
+    retained_count, retained_bytes = _storage_stats()
     return {
-        "status": "ok",
-        "vercel": settings.vercel_mode,
-        "telegram_configured": bool(settings.telegram_bot_token),
-        "telegram_send_limit_bytes": settings.telegram_send_limit_bytes,
-        "retained_media_count": retained_media_count,
-        "retained_media_bytes": retained_media_bytes,
+        "ok": local_ready,
+        "localApiReady": local_ready,
+        "queueDepth": queue_depth,
+        "selectionCount": selection_count,
+        "maxFileBytes": settings.telegram_send_limit_bytes,
+        "retainedMediaCount": retained_count,
+        "retainedMediaBytes": retained_bytes,
     }

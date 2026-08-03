@@ -1,23 +1,16 @@
-from app.vercel_remote import select_remote_url
+import inspect
+
+from app import vercel_remote
 
 
-def test_select_remote_url_prefers_combined_mp4():
-    info = {
-        "formats": [
-            {"url": "https://cdn.test/video-only.mp4", "ext": "mp4", "vcodec": "h264", "acodec": "none", "height": 1080},
-            {"url": "https://cdn.test/combined.webm", "ext": "webm", "vcodec": "vp9", "acodec": "opus", "height": 1080},
-            {"url": "https://cdn.test/combined.mp4", "ext": "mp4", "vcodec": "h264", "acodec": "aac", "height": 720},
-        ]
-    }
+def test_vercel_remote_forwards_without_downloading_media():
+    source = inspect.getsource(vercel_remote)
 
-    assert select_remote_url(info) == "https://cdn.test/combined.mp4"
+    assert "download_and_upload" not in source
+    assert "yt_dlp" not in source
+    assert "forward_telegram_update" in source
 
 
-def test_select_remote_url_rejects_video_only_formats():
-    info = {
-        "formats": [
-            {"url": "https://cdn.test/video-only.mp4", "ext": "mp4", "vcodec": "h264", "acodec": "none", "height": 1080},
-        ]
-    }
-
-    assert select_remote_url(info) is None
+def test_vercel_remote_exposes_only_forwarding_handler():
+    assert hasattr(vercel_remote, "handle_vercel_remote_update")
+    assert not hasattr(vercel_remote, "select_remote_url")

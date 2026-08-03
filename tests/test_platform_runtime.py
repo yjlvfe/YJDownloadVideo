@@ -31,7 +31,7 @@ def test_cookie_file_for_url_materializes_domain_secret(tmp_path: Path, monkeypa
     assert config.cookie_file_for_url("https://www.instagram.com/reel/test") is None
 
 
-def test_ytdlp_options_use_absolute_ffmpeg_and_node_without_forcing_old_clients(monkeypatch, tmp_path: Path):
+def test_ytdlp_options_use_absolute_ffmpeg_and_proven_youtube_clients(monkeypatch, tmp_path: Path):
     binaries = {"ffmpeg": "/usr/bin/ffmpeg", "node": "/usr/bin/node"}
     monkeypatch.setattr("shutil.which", lambda name: binaries.get(name))
     monkeypatch.setattr(config.settings, "ffmpeg_bin", "ffmpeg")
@@ -40,4 +40,8 @@ def test_ytdlp_options_use_absolute_ffmpeg_and_node_without_forcing_old_clients(
 
     assert opts["ffmpeg_location"] == "/usr/bin/ffmpeg"
     assert opts["js_runtimes"] == {"node": {}}
-    assert "player_client" not in opts.get("extractor_args", {}).get("youtube", {})
+    # 🎯 الإصلاح المجرّب: عميل android يتجاوز حجب يوتيوب — بدونها LOGIN_REQUIRED
+    clients = opts.get("extractor_args", {}).get("youtube", {}).get("player_client", [])
+    assert "android" in clients
+    # لا انتحال شخصية غير مدعومة (يكسر yt-dlp >= 2026)
+    assert "impersonate" not in opts

@@ -82,6 +82,20 @@ class TelegramAPI:
     def endpoint(self, method: str) -> str:
         return f"{self.base_url}/bot{self.token}/{method}"
 
+    async def ready(self) -> bool:
+        """Check that the local Bot API listener is accepting HTTP connections.
+
+        This deliberately avoids authenticated methods such as getMe so startup and
+        health probes cannot consume Telegram's per-bot request quota.
+        """
+        timeout = httpx.Timeout(3.0, connect=2.0)
+        try:
+            async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+                await client.get(f"{self.base_url}/")
+            return True
+        except httpx.HTTPError:
+            return False
+
     @staticmethod
     def _result(response: httpx.Response) -> dict[str, Any]:
         try:

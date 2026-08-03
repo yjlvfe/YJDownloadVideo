@@ -252,7 +252,13 @@ class UniversalExtractor:
                     last_err = str(e)[:200]
             if best_res:
                 return best_res
-            raise DownloadError(f"فشل التحميل: {last_err}")
+            hint = ""
+            if ("youtube" in url.lower() or "youtu.be" in url.lower()) and not self.cookies_file:
+                hint = (" 💡 يوتيوب يحجب خوادم الاستضافة (فحص روبوت). "
+                        "الحل المضمون: أضف كوكيز يوتيوب من متصفحك عبر "
+                        "متغير YOUTUBE_COOKIES_B64 في إعدادات الخادم، أو أرسل ملف "
+                        "كوكيز للبوت (Get cookies.txt) مرة واحدة.")
+            raise DownloadError(f"فشل التحميل: {last_err}{hint}")
         except DownloadError:
             raise
         except Exception as e:  # noqa: BLE001
@@ -395,11 +401,15 @@ class UniversalExtractor:
                 path = max(files, key=lambda p: p.stat().st_mtime)
         except Exception as first_err:  # noqa: BLE001
             if preferred != "audio":
-                # 🎯 يوتيوب: 403 من googlevideo = حجب IP/توقيع من يوتيوب —
-                # أعد المحاولة بعملاء آخرين (ios/web/tv) قبل الاستسلام
+                # 🎯 يوتيوب: 403 من googlevideo أو فحص "لست روبوت" (حجب IP/توقيع) —
+                # أعد المحاولة بعملاء آخرين (ios/web/tv_embedded) قبل الاستسلام
                 low_err = str(first_err).lower()
-                if "googlevideo" in low_err and "403" in low_err:
-                    for client in ("ios", "web", "tv"):
+                is_youtube = "youtube" in url.lower() or "youtu.be" in url.lower()
+                bot_blocked = any(k in low_err for k in (
+                    "googlevideo", "403", "sign in", "not a bot",
+                    "login required", "log in", "player response"))
+                if is_youtube and bot_blocked:
+                    for client in ("ios", "web", "tv_embedded"):
                         try:
                             opts_c = self._base_ytdlp_opts(outdir, preferred)
                             opts_c["extractor_args"] = {"youtube": {"player_client": [client]}}

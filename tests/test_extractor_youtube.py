@@ -19,6 +19,7 @@ install_runtime_patches()
 def test_ytdlp_options_use_registry_and_bounded_retries(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(config.settings, "youtube_proxy_url", "http://proxy.example:8080")
     extractor = UniversalExtractor(use_browser=False)
+    extractor._runtime_url = "https://youtube.com/watch?v=abcdefghijk"
 
     opts = extractor._base_ytdlp_opts(tmp_path, "720")
 
@@ -27,7 +28,17 @@ def test_ytdlp_options_use_registry_and_bounded_retries(monkeypatch: pytest.Monk
     assert opts["fragment_retries"] == 1
     assert opts["proxy"] == "http://proxy.example:8080"
     clients = opts.get("extractor_args", {}).get("youtube", {}).get("player_client", [])
-    assert "tv_embedded" not in clients
+    assert clients == ["android"]
+
+
+def test_youtube_proxy_never_leaks_to_other_platforms(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(config.settings, "youtube_proxy_url", "http://proxy.example:8080")
+    extractor = UniversalExtractor(use_browser=False)
+    extractor._runtime_url = "https://www.instagram.com/reel/example/"
+
+    opts = extractor._base_ytdlp_opts(tmp_path, "720")
+
+    assert "proxy" not in opts
 
 
 def test_public_youtube_fallback_is_disabled_by_default(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

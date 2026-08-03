@@ -19,8 +19,8 @@ def test_worker_signature_is_bound_to_request_context():
 def test_render_exposes_signed_worker_routes():
     source = Path("app/main.py").read_text(encoding="utf-8")
 
-    assert '@app.post("/telegram/update")' in source
-    assert '@app.post("/telegram/call/{method}")' in source
+    assert '@app.post("/telegram/update"' in source
+    assert '@app.post("/telegram/call/{method}"' in source
     assert "verify_worker_signature" in source
 
 

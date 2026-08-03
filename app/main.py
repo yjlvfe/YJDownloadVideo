@@ -303,18 +303,25 @@ async def telegram_webhook(request: Request) -> dict:
     if not hmac.compare_digest(supplied_secret, telegram_webhook_secret()):
         raise HTTPException(403, "Invalid Telegram webhook secret")
 
-    from telegram import Update
-    from .bot import handle_update_webhook, webhook_bot
-
     try:
         data = await request.json()
+
+        # On Vercel, avoid downloading media into /tmp and uploading it again.
+        # Telegram's Bot API can fetch an HTTP media URL directly.
+        if settings.vercel_mode:
+            from .vercel_remote import handle_vercel_remote_update
+
+            if await handle_vercel_remote_update(data):
+                return {"ok": True, "delivery": "remote"}
+
+        from telegram import Update
+        from .bot import handle_update_webhook, webhook_bot
+
         update = Update.de_json(data, await webhook_bot())
         if update is not None:
             await handle_update_webhook(update)
     except Exception as exc:  # noqa: BLE001
-        from .bot import log
-
-        log.exception("webhook failed")
+        logging.getLogger("telegram-webhook").exception("webhook failed")
         raise HTTPException(500, "Telegram update processing failed") from exc
     return {"ok": True}
 

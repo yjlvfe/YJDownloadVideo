@@ -14,11 +14,15 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .config import settings
+from .config import ffmpeg_location, javascript_runtime_options, settings
 from .db import Job, SessionLocal, init_db
+from .platform_runtime import install_runtime_patches
 from .security import read_token, validate_public_url
 from .telegram_api import TelegramAPI
-from .telegram_flow import get_telegram_flow
+
+install_runtime_patches()
+
+from .telegram_flow import get_telegram_flow  # noqa: E402
 
 for logger_name in ("httpx", "httpcore"):
     logging.getLogger(logger_name).setLevel(logging.WARNING)
@@ -285,6 +289,7 @@ async def health() -> dict:
         except Exception:  # noqa: BLE001
             local_ready = False
     retained_count, retained_bytes = _storage_stats()
+    ffmpeg_path = Path(ffmpeg_location())
     return {
         "ok": local_ready,
         "localApiReady": local_ready,
@@ -293,4 +298,6 @@ async def health() -> dict:
         "maxFileBytes": settings.telegram_send_limit_bytes,
         "retainedMediaCount": retained_count,
         "retainedMediaBytes": retained_bytes,
+        "ffmpegReady": ffmpeg_path.is_file(),
+        "javascriptRuntimeReady": bool(javascript_runtime_options()),
     }

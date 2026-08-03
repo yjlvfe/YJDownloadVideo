@@ -13,8 +13,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
-    && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt \
-    && /opt/venv/bin/pip install --no-cache-dir -U --pre "yt-dlp[default]"
+    && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 RUN mkdir -p /app/data /app/storage \

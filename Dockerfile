@@ -5,10 +5,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:${PATH}"
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-       ca-certificates chromium curl ffmpeg python3 python3-pip python3-venv \
-    && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache \
+      ca-certificates chromium curl ffmpeg python3 py3-pip py3-virtualenv
 
 WORKDIR /app
 COPY requirements.txt .

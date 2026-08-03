@@ -1,0 +1,68 @@
+services:
+  web:
+    build: .
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./storage:/app/storage
+    depends_on:
+      - redis
+  worker:
+    build: .
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    command: python -m app.worker
+    volumes:
+      - ./data:/app/data
+      - ./storage:/app/storage
+    depends_on:
+      - redis
+  bot:
+    build: .
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    command: python -m app.bot
+    volumes:
+      - ./data:/app/data
+      - ./storage:/app/storage
+    depends_on:
+      - redis
+  cleanup:
+    build: .
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    command: python -m app.cleanup
+    volumes:
+      - ./data:/app/data
+      - ./storage:/app/storage
+    depends_on:
+      - redis
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+  # Local Telegram Bot API Server — يرفع حد إرسال البوت إلى 2GB (بدون تسجيل دخول)
+  # الصورة الرسمية الجاهزة: https://hub.docker.com/r/aiogram/telegram-bot-api
+  # ملاحظة: سكربت الدخول يتجاهل command: — يقرأ متغيرات البيئة فقط.
+  # TELEGRAM_LOCAL=true هو اللي يفعل وضع --local (حد 2GB) — بدونه يبقى حد 50MB!
+  tba:
+    image: aiogram/telegram-bot-api:latest
+    restart: unless-stopped
+    environment:
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH}
+      TELEGRAM_LOCAL: "true"
+    volumes:
+      - tba_data:/var/lib/telegram-bot-api
+volumes:
+  redis_data:
+  tba_data:

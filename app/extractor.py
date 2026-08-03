@@ -225,8 +225,14 @@ class UniversalExtractor:
         # L1: yt-dlp كامل (الأقوى: دمج جودة عالية + صوت)
         try:
             return self._download_ytdlp(url, outdir, preferred)
-        except DownloadError:
-            raise
+        except DownloadError as de:
+            # يوتيوب محجوب من الخادم (فحص روبوت)؟ جرّب الخوادم البديلة قبل الاستسلام
+            if not (self._is_youtube(url) and not self.cookies_file):
+                raise
+            try:
+                return self._download_yt_fallback(url, outdir, preferred)
+            except DownloadError:
+                raise de
         except Exception as e:  # noqa: BLE001
             first_err = str(e)[:200]
 
@@ -252,6 +258,12 @@ class UniversalExtractor:
                     last_err = str(e)[:200]
             if best_res:
                 return best_res
+            # L4: يوتيوب محجوب (فحص روبوت على خوادم الاستضافة) — خوادم Invidious/Piped العامة بلا كوكيز
+            if not self.cookies_file and self._is_youtube(url):
+                try:
+                    return self._download_yt_fallback(url, outdir, preferred)
+                except DownloadError:
+                    pass
             hint = ""
             if ("youtube" in url.lower() or "youtu.be" in url.lower()) and not self.cookies_file:
                 hint = (" 💡 يوتيوب يحجب خوادم الاستضافة (فحص روبوت). "
@@ -386,6 +398,43 @@ class UniversalExtractor:
         return {"source": "ytdlp", "title": info.get("title") or "",
                 "thumbnail": info.get("thumbnail") or "", "duration": info.get("duration"),
                 "candidates": cands}
+
+    @staticmethod
+    def _is_youtube(url: str) -> bool:
+        u = url.lower()
+        return "youtube.com" in u or "youtu.be" in u
+
+    def _download_yt_fallback(self, url: str, outdir: Path, preferred: str) -> dict:
+        """L4: يوتيوب محجوب من الخادم — يحمّل عبر خوادم Invidious/Piped العامة (بلا كوكيز)."""
+        from yt_dlp import YoutubeDL
+
+        m = re.search(r"(?:v=|shorts/|youtu\.be/|embed/|live/)([A-Za-z0-9_-]{11})", url)
+        video_id = m.group(1) if m else None
+        if not video_id:
+            raise DownloadError("لا يمكن تحديد معرّف يوتيوب")
+        last_err = "لا خوادم بديلة متاحة"
+        for host in ("yewtu.be", "invidious.nerdvpn.de", "piped.video"):
+            alt = f"https://{host}/watch?v={video_id}"
+            try:
+                opts = self._base_ytdlp_opts(outdir, preferred)
+                opts["outtmpl"] = str(outdir / "%(title).120s.%(ext)s")
+                with YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(alt, download=True)
+                files = [p for p in outdir.iterdir() if p.is_file()]
+                if not files:
+                    raise DownloadError("لم يُنشأ ملف")
+                path = max(files, key=lambda p: p.stat().st_mtime)
+                if not _has_audio(path):
+                    raise DownloadError("بدون صوت")
+                if preferred != "audio" and not _has_video(path):
+                    raise DownloadError("بدون فيديو")
+                return {"path": str(path), "title": info.get("title") or video_id,
+                        "duration": info.get("duration"),
+                        "thumbnail": info.get("thumbnail") or "",
+                        "ext": path.suffix.lstrip(".")}
+            except Exception as e:  # noqa: BLE001
+                last_err = f"{host}: {str(e)[:120]}"
+        raise DownloadError(f"فشلت خوادم يوتيوب البديلة: {last_err}")
 
     def _download_ytdlp(self, url: str, outdir: Path, preferred: str) -> dict:
         from yt_dlp import YoutubeDL

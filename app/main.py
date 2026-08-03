@@ -53,45 +53,37 @@ def job_json(job: Job | None) -> dict:
 
 
 def normalize_formats(raw_formats: list[dict]) -> list[dict]:
-    """Show one option per resolution and always request audio with video."""
-    unique: dict[tuple[int, str], dict] = {}
+    """Show one option per real resolution and always request audio with video."""
+    unique: dict[int, dict] = {}
     for item in raw_formats or []:
         label = str(item.get("label") or "")
         match = re.match(r"\s*(\d+)p\s*/\s*([^\s]+)", label, re.IGNORECASE)
         if not match:
             continue
         height = int(match.group(1))
-        extension = match.group(2).lower()
         size = item.get("size")
-        key = (height, extension)
+        if size and int(size) > settings.max_file_size_bytes:
+            continue
         candidate = {
             "id": (
                 f"bestvideo[height<={height}]+bestaudio/"
                 f"best[height<={height}]"
             ),
-            "label": f"{height}p / {extension}",
+            "label": f"{height}p",
             "size": size,
         }
-        previous = unique.get(key)
+        previous = unique.get(height)
         previous_size = (previous or {}).get("size") or 0
         if previous is None or (size or 0) > previous_size:
-            unique[key] = candidate
+            unique[height] = candidate
 
-    quality_options = [
-        unique[key]
-        for key in sorted(unique, key=lambda value: (value[0], value[1]))
-    ]
+    quality_options = [unique[key] for key in sorted(unique)]
     if not quality_options:
-        quality_options = [
-            {"id": "1080", "label": "1080p", "size": None},
-            {"id": "720", "label": "720p", "size": None},
-            {"id": "480", "label": "480p", "size": None},
-        ]
+        quality_options = [{"id": "best", "label": "الجودة الأصلية", "size": None}]
 
     return [
-        {"id": "best", "label": "الأفضل تلقائيًا", "size": None},
         *quality_options,
-        {"id": "audio", "label": "صوت فقط", "size": None},
+        {"id": "audio", "label": "صوت MP3", "size": None},
     ]
 
 
@@ -104,50 +96,13 @@ def telegram_webhook_secret() -> str:
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
-def _telegram_message(data: dict) -> tuple[int | None, str]:
-    message = data.get("message") or data.get("edited_message") or {}
-    chat_id = (message.get("chat") or {}).get("id")
-    text = str(message.get("text") or "").strip()
-    return (chat_id if isinstance(chat_id, int) else None, text)
-
-
-async def _handle_simple_telegram_command(data: dict) -> bool:
-    from .remote_worker import telegram_call
-
-    chat_id, text = _telegram_message(data)
-    if chat_id is None:
-        return False
-
-    if text.startswith(("/start", "/help")):
-        await telegram_call(
-            "sendMessage",
-            {
-                "chat_id": chat_id,
-                "text": (
-                    "أهلاً بك في YJDownloadVideo 🤖\n\n"
-                    "أرسل رابط فيديو من تيك توك أو أي موقع مدعوم، وسأحمّله "
-                    "بالجودة الأصلية وأرسله لك حتى 2GB.\n\n"
-                    "لا تغلق المحادثة أثناء المعالجة، والملفات المؤقتة تُحذف بعد الإرسال."
-                ),
-            },
-        )
-        return True
-
-    if text and not text.startswith(("https://", "http://")):
-        await telegram_call(
-            "sendMessage",
-            {
-                "chat_id": chat_id,
-                "text": "⚠️ أرسل رابطًا مباشرًا للصفحة التي تحتوي على الفيديو.",
-            },
-        )
-        return True
-    return False
-
-
 @app.on_event("startup")
 def startup() -> None:
     init_db()
+    if settings.vercel_mode:
+        from .vercel_media_flow import cleanup_vercel_temp
+
+        cleanup_vercel_temp()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -282,7 +237,7 @@ def download(token: str):
 
 @app.get("/api/telegram/status")
 async def telegram_status(repair: bool = False, drop_pending: bool = False) -> dict:
-    """Read and repair the webhook through the co-located local Bot API."""
+    """Read or repair Telegram directly from this Vercel project."""
     if not settings.telegram_bot_token:
         return {
             "configured": False,
@@ -292,13 +247,14 @@ async def telegram_status(repair: bool = False, drop_pending: bool = False) -> d
             "expected_url": telegram_webhook_url(),
         }
 
-    from .remote_worker import RemoteWorkerError, telegram_call
+    from .vercel_media_flow import TelegramAPI, TelegramAPIError
 
     expected_url = telegram_webhook_url()
     repaired = False
+    api = TelegramAPI(settings.telegram_bot_token)
     try:
         if repair:
-            await telegram_call(
+            await api.call(
                 "setWebhook",
                 {
                     "url": expected_url,
@@ -309,8 +265,8 @@ async def telegram_status(repair: bool = False, drop_pending: bool = False) -> d
                 },
             )
             repaired = True
-        info = await telegram_call("getWebhookInfo", {})
-    except RemoteWorkerError as exc:
+        info = await api.call("getWebhookInfo", {})
+    except TelegramAPIError as exc:
         return {
             "configured": True,
             "connected": False,
@@ -319,6 +275,7 @@ async def telegram_status(repair: bool = False, drop_pending: bool = False) -> d
             "error": str(exc)[:200],
         }
 
+    info = info if isinstance(info, dict) else {}
     current_url = str(info.get("url") or "")
     return {
         "configured": True,
@@ -334,7 +291,7 @@ async def telegram_status(repair: bool = False, drop_pending: bool = False) -> d
 
 @app.post("/webhook/telegram")
 async def telegram_webhook(request: Request) -> dict:
-    """Validate Telegram and forward media jobs to the persistent Docker worker."""
+    """Process Telegram updates entirely inside the configured Vercel project."""
     if not settings.telegram_bot_token:
         raise HTTPException(503, "Telegram bot is not configured")
 
@@ -345,14 +302,9 @@ async def telegram_webhook(request: Request) -> dict:
     try:
         data = await request.json()
         if settings.vercel_mode:
-            if await _handle_simple_telegram_command(data):
-                return {"ok": True, "delivery": "command"}
+            from .vercel_media_flow import handle_update
 
-            from .vercel_remote import handle_vercel_remote_update
-
-            if await handle_vercel_remote_update(data):
-                return {"ok": True, "delivery": "render-2gb"}
-            return {"ok": True, "delivery": "ignored"}
+            return await handle_update(data)
 
         from telegram import Update
         from .bot import handle_update_webhook, webhook_bot
@@ -370,10 +322,14 @@ async def telegram_webhook(request: Request) -> dict:
 
 @app.get("/api/health")
 def health() -> dict:
+    from .vercel_media_flow import retained_media_stats
+
+    retained_media_count, retained_media_bytes = retained_media_stats()
     return {
         "status": "ok",
         "vercel": settings.vercel_mode,
         "telegram_configured": bool(settings.telegram_bot_token),
-        "remote_worker_configured": bool(settings.remote_worker_url),
         "telegram_send_limit_bytes": settings.telegram_send_limit_bytes,
+        "retained_media_count": retained_media_count,
+        "retained_media_bytes": retained_media_bytes,
     }

@@ -6,9 +6,8 @@ import re
 import secrets
 from pathlib import Path
 
-import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -16,10 +15,10 @@ from .config import settings
 from .db import Job, SessionLocal, init_db
 from .security import read_token, validate_public_url
 
-# python-telegram-bot/httpx may otherwise log Bot API URLs containing the bot token.
 for logger_name in ("httpx", "httpcore", "telegram"):
     logging.getLogger(logger_name).setLevel(logging.WARNING)
 
+log = logging.getLogger("telegram-webhook")
 app = FastAPI(title=settings.app_name)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
@@ -54,11 +53,7 @@ def job_json(job: Job | None) -> dict:
 
 
 def normalize_formats(raw_formats: list[dict]) -> list[dict]:
-    """Show one option per resolution and always request audio with video.
-
-    yt-dlp frequently reports duplicate video-only formats. Selecting one of those
-    made the worker download it, discover it had no audio, then download again.
-    """
+    """Show one option per resolution and always request audio with video."""
     unique: dict[tuple[int, str], dict] = {}
     for item in raw_formats or []:
         label = str(item.get("label") or "")
@@ -105,8 +100,49 @@ def telegram_webhook_url() -> str:
 
 
 def telegram_webhook_secret() -> str:
-    material = f"{settings.secret_key}:{settings.telegram_bot_token}"
+    material = f"yjdownload-local-webhook-v1\0{settings.telegram_bot_token}"
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _telegram_message(data: dict) -> tuple[int | None, str]:
+    message = data.get("message") or data.get("edited_message") or {}
+    chat_id = (message.get("chat") or {}).get("id")
+    text = str(message.get("text") or "").strip()
+    return (chat_id if isinstance(chat_id, int) else None, text)
+
+
+async def _handle_simple_telegram_command(data: dict) -> bool:
+    from .remote_worker import telegram_call
+
+    chat_id, text = _telegram_message(data)
+    if chat_id is None:
+        return False
+
+    if text.startswith(("/start", "/help")):
+        await telegram_call(
+            "sendMessage",
+            {
+                "chat_id": chat_id,
+                "text": (
+                    "أهلاً بك في YJDownloadVideo 🤖\n\n"
+                    "أرسل رابط فيديو من تيك توك أو أي موقع مدعوم، وسأحمّله "
+                    "بالجودة الأصلية وأرسله لك حتى 2GB.\n\n"
+                    "لا تغلق المحادثة أثناء المعالجة، والملفات المؤقتة تُحذف بعد الإرسال."
+                ),
+            },
+        )
+        return True
+
+    if text and not text.startswith(("https://", "http://")):
+        await telegram_call(
+            "sendMessage",
+            {
+                "chat_id": chat_id,
+                "text": "⚠️ أرسل رابطًا مباشرًا للصفحة التي تحتوي على الفيديو.",
+            },
+        )
+        return True
+    return False
 
 
 @app.on_event("startup")
@@ -188,7 +224,6 @@ def create_job(data: CreateRequest, request: Request) -> dict:
         job_id = job.id
 
     if settings.vercel_mode:
-        # Vercel has no persistent worker process, so this request performs the job.
         try:
             process_inline(job_id)
         except Exception:  # noqa: BLE001
@@ -245,115 +280,9 @@ def download(token: str):
         )
 
 
-def _upstream_media_headers(headers: httpx.Headers, *, head_request: bool = False) -> dict[str, str]:
-    content_type = (headers.get("content-type") or "").split(";", 1)[0].strip().lower()
-    if content_type.startswith("text/") or content_type in {"application/json", "application/xml"}:
-        raise HTTPException(502, "المصدر أعاد صفحة بدل ملف الفيديو")
-
-    result = {
-        "Content-Type": content_type or "video/mp4",
-        "Accept-Ranges": headers.get("accept-ranges") or "bytes",
-        "Cache-Control": "private, no-store",
-        "Content-Disposition": "inline; filename=video.mp4",
-    }
-    for source_name, target_name in (
-        ("content-range", "Content-Range"),
-        ("etag", "ETag"),
-        ("last-modified", "Last-Modified"),
-    ):
-        value = headers.get(source_name)
-        if value:
-            result[target_name] = value
-
-    content_length = headers.get("content-length")
-    if head_request:
-        content_range = headers.get("content-range") or ""
-        if "/" in content_range:
-            total = content_range.rsplit("/", 1)[-1]
-            if total.isdigit():
-                content_length = total
-    if content_length and content_length.isdigit():
-        result["Content-Length"] = content_length
-    return result
-
-
-@app.api_route("/telegram/media/{token}", methods=["GET", "HEAD"])
-async def telegram_media_proxy(token: str, request: Request):
-    """Stream protected CDN media with the browser headers required by the source."""
-    from .media_proxy import proxy_headers, read_proxy_token
-
-    try:
-        payload = read_proxy_token(token, secret=settings.secret_key)
-        media_url = validate_public_url(str(payload["media_url"]))
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(404, "رابط الوسائط منتهي أو غير صالح") from exc
-
-    request_range = request.headers.get("range")
-    upstream_headers = proxy_headers(payload.get("headers") or {}, request_range)
-    timeout = httpx.Timeout(300.0, connect=20.0)
-    limits = httpx.Limits(max_connections=1, max_keepalive_connections=0)
-
-    if request.method == "HEAD":
-        probe_headers = proxy_headers(payload.get("headers") or {}, "bytes=0-0")
-        try:
-            async with httpx.AsyncClient(
-                timeout=timeout,
-                limits=limits,
-                follow_redirects=True,
-                trust_env=False,
-            ) as client:
-                async with client.stream("GET", media_url, headers=probe_headers) as upstream:
-                    if upstream.status_code not in (200, 206):
-                        raise HTTPException(502, f"تعذر جلب الفيديو من المصدر ({upstream.status_code})")
-                    headers = _upstream_media_headers(upstream.headers, head_request=True)
-                    return Response(status_code=200, headers=headers)
-        except HTTPException:
-            raise
-        except httpx.HTTPError as exc:
-            raise HTTPException(502, "تعذر الاتصال بمصدر الفيديو") from exc
-
-    client = httpx.AsyncClient(
-        timeout=timeout,
-        limits=limits,
-        follow_redirects=True,
-        trust_env=False,
-    )
-    try:
-        upstream_request = client.build_request("GET", media_url, headers=upstream_headers)
-        upstream = await client.send(upstream_request, stream=True)
-        if upstream.status_code not in (200, 206):
-            status_code = upstream.status_code
-            await upstream.aclose()
-            await client.aclose()
-            raise HTTPException(502, f"تعذر جلب الفيديو من المصدر ({status_code})")
-        response_headers = _upstream_media_headers(upstream.headers)
-    except HTTPException:
-        await client.aclose()
-        raise
-    except httpx.HTTPError as exc:
-        await client.aclose()
-        raise HTTPException(502, "تعذر الاتصال بمصدر الفيديو") from exc
-
-    async def body_iterator():
-        try:
-            async for chunk in upstream.aiter_raw(256 * 1024):
-                if chunk:
-                    yield chunk
-        finally:
-            await upstream.aclose()
-            await client.aclose()
-
-    return StreamingResponse(
-        body_iterator(),
-        status_code=upstream.status_code,
-        headers=response_headers,
-        media_type=response_headers.get("Content-Type", "video/mp4"),
-    )
-
-
 @app.get("/api/telegram/status")
 async def telegram_status(repair: bool = False, drop_pending: bool = False) -> dict:
-    """Return safe webhook diagnostics and optionally repair the Telegram webhook."""
+    """Read and repair the webhook through the co-located local Bot API."""
     if not settings.telegram_bot_token:
         return {
             "configured": False,
@@ -363,23 +292,25 @@ async def telegram_status(repair: bool = False, drop_pending: bool = False) -> d
             "expected_url": telegram_webhook_url(),
         }
 
-    from telegram import Bot, Update
+    from .remote_worker import RemoteWorkerError, telegram_call
 
     expected_url = telegram_webhook_url()
+    repaired = False
     try:
-        async with Bot(settings.telegram_bot_token) as bot:
-            repaired = False
-            if repair:
-                repaired = bool(
-                    await bot.set_webhook(
-                        url=expected_url,
-                        secret_token=telegram_webhook_secret(),
-                        allowed_updates=Update.ALL_TYPES,
-                        drop_pending_updates=drop_pending,
-                    )
-                )
-            info = await bot.get_webhook_info()
-    except Exception as exc:  # noqa: BLE001
+        if repair:
+            await telegram_call(
+                "setWebhook",
+                {
+                    "url": expected_url,
+                    "secret_token": telegram_webhook_secret(),
+                    "allowed_updates": ["message", "edited_message"],
+                    "drop_pending_updates": bool(drop_pending),
+                    "max_connections": 10,
+                },
+            )
+            repaired = True
+        info = await telegram_call("getWebhookInfo", {})
+    except RemoteWorkerError as exc:
         return {
             "configured": True,
             "connected": False,
@@ -388,21 +319,22 @@ async def telegram_status(repair: bool = False, drop_pending: bool = False) -> d
             "error": str(exc)[:200],
         }
 
+    current_url = str(info.get("url") or "")
     return {
         "configured": True,
-        "connected": info.url.rstrip("/") == expected_url.rstrip("/"),
+        "connected": current_url.rstrip("/") == expected_url.rstrip("/"),
         "repaired": repaired,
         "dropped_pending": bool(repair and drop_pending),
         "expected_url": expected_url,
-        "current_url": info.url,
-        "pending_updates": info.pending_update_count,
-        "last_error": (info.last_error_message or "")[:200],
+        "current_url": current_url,
+        "pending_updates": int(info.get("pending_update_count") or 0),
+        "last_error": str(info.get("last_error_message") or "")[:200],
     }
 
 
 @app.post("/webhook/telegram")
 async def telegram_webhook(request: Request) -> dict:
-    """Receive Telegram updates through the Vercel webhook."""
+    """Validate Telegram and forward media jobs to the persistent Docker worker."""
     if not settings.telegram_bot_token:
         raise HTTPException(503, "Telegram bot is not configured")
 
@@ -412,13 +344,15 @@ async def telegram_webhook(request: Request) -> dict:
 
     try:
         data = await request.json()
-
-        # On Vercel, avoid downloading media into /tmp and uploading it again.
         if settings.vercel_mode:
+            if await _handle_simple_telegram_command(data):
+                return {"ok": True, "delivery": "command"}
+
             from .vercel_remote import handle_vercel_remote_update
 
             if await handle_vercel_remote_update(data):
-                return {"ok": True, "delivery": "proxy"}
+                return {"ok": True, "delivery": "render-2gb"}
+            return {"ok": True, "delivery": "ignored"}
 
         from telegram import Update
         from .bot import handle_update_webhook, webhook_bot
@@ -426,9 +360,11 @@ async def telegram_webhook(request: Request) -> dict:
         update = Update.de_json(data, await webhook_bot())
         if update is not None:
             await handle_update_webhook(update)
+    except HTTPException:
+        raise
     except Exception as exc:  # noqa: BLE001
-        logging.getLogger("telegram-webhook").exception("webhook failed")
-        raise HTTPException(500, "Telegram update processing failed") from exc
+        log.exception("webhook failed")
+        raise HTTPException(503, "Telegram update processing failed") from exc
     return {"ok": True}
 
 
@@ -438,4 +374,6 @@ def health() -> dict:
         "status": "ok",
         "vercel": settings.vercel_mode,
         "telegram_configured": bool(settings.telegram_bot_token),
+        "remote_worker_configured": bool(settings.remote_worker_url),
+        "telegram_send_limit_bytes": settings.telegram_send_limit_bytes,
     }

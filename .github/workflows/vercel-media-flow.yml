@@ -24,6 +24,6 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Run complete test suite
-        run: pytest -q
+        run: PYTHONPATH=. pytest -q
       - name: Compile application
-        run: python -m compileall -q app
+        run: PYTHONPATH=. python -m compileall -q app

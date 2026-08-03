@@ -5,6 +5,7 @@ aiosqlite==0.20.0
 pydantic-settings==2.7.1
 python-multipart==0.0.20
 httpx==0.28.1
+requests==2.32.3
 python-telegram-bot==21.10
 yt-dlp>=2025.1.26
 redis==5.2.1

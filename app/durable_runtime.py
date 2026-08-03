@@ -47,6 +47,9 @@ def install_durable_flow_patches(queue: JobQueue | None = None) -> None:
     original_handle_update = telegram_flow.TelegramFlow.handle_update
     original_handle_callback = telegram_flow.TelegramFlow._handle_callback
 
+    def preserve_runtime_storage(self: Any) -> None:
+        Path(self.settings.storage_path).mkdir(parents=True, exist_ok=True)
+
     def selection_factory(ttl_seconds: int = 15 * 60, **_: Any) -> RecoverableSelectionStore:
         return RecoverableSelectionStore(
             queue.database_path,
@@ -101,6 +104,7 @@ def install_durable_flow_patches(queue: JobQueue | None = None) -> None:
             await self.api.send_message(chat_id, "ℹ️ هذا الطلب موجود بالفعل في طابور التحميل.")
 
     telegram_flow.SelectionStore = selection_factory
+    telegram_flow.TelegramFlow.clear_runtime_storage = preserve_runtime_storage
     telegram_flow.TelegramFlow.handle_update = handle_update
     telegram_flow.TelegramFlow._handle_callback = handle_callback
     telegram_flow.TelegramFlow._enqueue = enqueue_media
@@ -128,6 +132,12 @@ async def _lease_heartbeat(
 
 
 async def _dispatch(job: QueueJob) -> None:
+    if job.kind == "web_download":
+        from .worker import process_job
+
+        await asyncio.to_thread(process_job, str(job.payload["job_id"]))
+        return
+
     from .telegram_flow import DownloadRequest, get_telegram_flow, progress_text
 
     flow = get_telegram_flow()

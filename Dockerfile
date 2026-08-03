@@ -23,4 +23,5 @@ RUN mkdir -p /app/data /app/storage \
     && python -m pytest -q tests/test_media_choice.py tests/test_telegram_api.py tests/test_telegram_flow.py
 
 EXPOSE 10000
+ENTRYPOINT []
 CMD ["/app/docker/start-render.sh"]

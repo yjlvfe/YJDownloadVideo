@@ -53,6 +53,9 @@ _QUALITY_REGISTRY: tuple[QualityOption, ...] = (
 )
 _QUALITY_BY_KEY = {item.key: item for item in _QUALITY_REGISTRY}
 _QUALITY_KEY_BY_SELECTOR = {item.selector: item.key for item in _QUALITY_REGISTRY}
+_DYNAMIC_SELECTOR_RE = re.compile(
+    r"^bestvideo\[height<=(\d{2,4})\]\+bestaudio/best\[height<=\1\]$"
+)
 
 
 def quality_options(*, include_audio: bool = False) -> list[QualityOption]:
@@ -64,21 +67,41 @@ def quality_options(*, include_audio: bool = False) -> list[QualityOption]:
 
 
 def selector_for_quality(key: str) -> str:
-    option = _QUALITY_BY_KEY.get(str(key or "").strip().lower())
-    if option is None:
-        raise ValueError("unknown quality")
-    return option.selector
+    normalized = str(key or "").strip().lower()
+    option = _QUALITY_BY_KEY.get(normalized)
+    if option is not None:
+        return option.selector
+    if normalized == "original":
+        return _QUALITY_BY_KEY["best"].selector
+    if normalized.isdigit():
+        height = int(normalized)
+        if 144 <= height <= 1080:
+            return _bounded_video_selector(height)
+    raise ValueError("unknown quality")
 
 
 def quality_key_for_selector(selector: str) -> str | None:
-    return _QUALITY_KEY_BY_SELECTOR.get(str(selector or ""))
+    normalized = str(selector or "")
+    static = _QUALITY_KEY_BY_SELECTOR.get(normalized)
+    if static is not None:
+        return static
+    match = _DYNAMIC_SELECTOR_RE.fullmatch(normalized)
+    if match:
+        height = int(match.group(1))
+        if 144 <= height <= 1080:
+            return str(height)
+    return None
 
 
 def is_quality_key(key: str, *, include_audio: bool = False) -> bool:
     normalized = str(key or "").strip().lower()
-    return normalized in {
+    if normalized in {
         item.key for item in quality_options(include_audio=include_audio)
-    }
+    }:
+        return True
+    if normalized == "original":
+        return True
+    return normalized.isdigit() and 144 <= int(normalized) <= 1080
 
 
 def _height_of(item: dict[str, Any]) -> int | None:
@@ -96,7 +119,7 @@ def normalize_qualities(raw_formats: list[dict[str, Any]] | None) -> list[Qualit
         if item.get("vcodec") == "none":
             continue
         height = _height_of(item)
-        if not height:
+        if not height or not 144 <= height <= 1080:
             continue
         size = item.get("filesize") or item.get("filesize_approx") or item.get("size")
         size = int(size) if isinstance(size, (int, float)) and size > 0 else None

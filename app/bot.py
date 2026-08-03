@@ -28,84 +28,64 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "أهلاً بك في YJDownloadVideo 🤖\n\n"
         "أرسل أي رابط يحتوي فيديو — من أي موقع في العالم: سوشيال ميديا، صفحات عادية، "
         "مشغّلات JS، روابط مباشرة… وسأحمّله لك فورًا.\n\n"
-        "🔐 للمواقع اللي تطلب تسجيل دخول: أرسل ملف الكوكيز (من إضافة Get cookies.txt "
-        "في متصفحك) مرة واحدة — وبعدها كل روابطك تتحمّل بجلستك.\n"
+        "🔐 للمواقع اللي تطلب تسجيل دخول:\n"
+        "الكوكيز = بطاقة دخول متصفحك للموقع. ترسلها لي مرة واحدة، "
+        "وأستخدمها لتحميل المحتوى بجلستك المسجّلة.\n"
+        "  1) حمّل إضافة Get cookies.txt من متجر Chrome/Firefox\n"
+        "  2) سجّل دخولك بالموقع وافتح المقطع\n"
+        "  3) اضغط أيقونة الإضافة ← Export ← وأرسل لي الملف هنا 📄\n"
+        "وبعدها كل روابطك من ذاك الموقع تتحمّل بجلستك.\n"
         "🧹 /clearcookies لحذف الكوكيز المحفوظة.\n\n"
-        "📦 الملفات الكبيرة حتى 2GB تصل مباشرة عبر البوت (خادم Bot API محلي).\n"
-        "لأي ملف نادر يتجاوز 2GB: /link2gb لربط حسابك الشخصي.\n\n"
-        "🎵 /audio — المقاطع القادمة تُرسل كصوت فقط\n"
-        "🎬 /video — العودة لإرسال الفيديو (الوضع الافتراضي)\n\n"
+        "📦 الملفات الكبيرة حتى 2GB تصل مباشرة عبر البوت — بدون ربط أي حساب أو رقم جوال.\n\n"
+        "🎯 عند إرسال رابط يظهر لك اختيار: فيديو أو صوت، ثم جودة الفيديو.\n"
+        "   🎵 /audio — صوت دائمًا (بدون سؤال)\n"
+        "   🎬 /video — فيديو دائمًا (بدون سؤال)\n"
+        "   🔄 /reset — العودة للاختيار عند كل رابط\n\n"
         "الاستثناء الوحيد: البث المشفّر بالكامل (DRM) لا يمكن فكّه."
     )
 
-# حالات تسجيل الدخول: user_id -> {"step": "phone"|"code"|"2fa", "phone": str}
-LOGIN_STATE: dict[int, dict] = {}
 
-async def link2gb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    from .mtproto import has_session
-    uid = update.effective_user.id
-    if has_session(uid):
-        await update.message.reply_text("✅ حسابك مربوط مسبقًا — الملفات الكبيرة ستُرسل عبره تلقائيًا.\n/unlink2gb لفصله.")
-        return
-    LOGIN_STATE[uid] = {"step": "phone", "phone": ""}
+# تفضيلات المستخدم: "ask" (افتراضي — اختيار عند كل رابط) | "audio" | "video"
+def _pref_mode(uid: int) -> str:
+    return PREFS.get(str(uid), "ask")
+
+
+def _set_pref(uid: int, mode: str):
+    PREFS[str(uid)] = mode
+    save_user_prefs(PREFS)
+
+
+async def reset_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    _set_pref(update.effective_user.id, "ask")
     await update.message.reply_text(
-        "📱 لربط حسابك الشخصي (لإرسال حتى 2GB):\n"
-        "أرسل رقم هاتف التليجرام بصيغة دولية، مثال: +9665XXXXXXXX\n\n"
-        "⚠️ تنبيه: الاستخدام المكثف الآلي لحساب شخصي قد يعرّضه لقيود من تيليجرام — استخدمه باعتدال."
+        "🔄 تمت الإعادة — سيظهر لك الاختيار (فيديو/صوت/دقة) عند كل رابط."
     )
 
-async def unlink2gb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    from .mtproto import logout
-    uid = update.effective_user.id
-    LOGIN_STATE.pop(uid, None)
-    await logout(uid)
-    await update.message.reply_text("🧹 تم فصل حسابك الشخصي. ستعود الملفات الكبيرة لروابط التحميل.")
 
-async def handle_login_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """يعالج رسائل الهاتف/الكود/كلمة المرور أثناء ربط الحساب. يعيد True إذا استهلك الرسالة."""
-    from .mtproto import start_login, complete_login, complete_2fa
-    uid = update.effective_user.id
-    state = LOGIN_STATE.get(uid)
-    if not state:
-        return False
-    text = (update.message.text or "").strip()
-    if state["step"] == "phone":
-        res = await start_login(uid, text)
-        if res == "already":
-            LOGIN_STATE.pop(uid, None)
-            await update.message.reply_text("✅ حسابك مربوط مسبقًا.")
-        elif res == "code_sent":
-            state["phone"], state["step"] = text, "code"
-            await update.message.reply_text("🔑 وصلك رمز تحقق في تيليجرام — أرسله هنا.")
-        elif res == "bad_phone":
-            await update.message.reply_text("⚠️ رقم الهاتف غير صالح. أرسله بصيغة دولية: +9665XXXXXXXX")
-        else:
-            await update.message.reply_text(f"❌ {res}")
-        return True
-    if state["step"] == "code":
-        res = await complete_login(uid, state["phone"], text)
-        if res == "ok":
-            LOGIN_STATE.pop(uid, None)
-            await update.message.reply_text("✅ تم الربط بنجاح! الآن أي ملف أكبر من 50MB سيُرسل عبر حسابك حتى 2GB.")
-        elif res == "2fa":
-            state["step"] = "2fa"
-            await update.message.reply_text("🔐 حسابك مفعّل عليه التحقق بخطوتين — أرسل كلمة المرور.")
-        elif res == "bad_code":
-            await update.message.reply_text("⚠️ الرمز غير صحيح أو منتهي — أرسله مجددًا.")
-        else:
-            await update.message.reply_text(f"❌ {res}")
-        return True
-    if state["step"] == "2fa":
-        res = await complete_2fa(uid, text)
-        if res == "ok":
-            LOGIN_STATE.pop(uid, None)
-            await update.message.reply_text("✅ تم الربط بنجاح! الآن أي ملف أكبر من 50MB سيُرسل عبر حسابك حتى 2GB.")
-        elif res == "bad_password":
-            await update.message.reply_text("⚠️ كلمة المرور غير صحيحة — أعد المحاولة.")
-        else:
-            await update.message.reply_text(f"❌ {res}")
-        return True
-    return False
+async def _create_job(user_id: int, chat_id: int, url: str, fmt: str, context) -> str:
+    """ينشئ مهمة ويرسل رسالة الطابور — مشترك بين الاختيار والتفضيلات."""
+    user_key = f"tg:{user_id}"
+    with SessionLocal() as db:
+        queue_pos = db.query(Job).filter(
+            Job.owner_key == user_key,
+            Job.status.in_(["waiting", "downloading", "preparing"]),
+        ).count() + 1
+        job = Job(id=secrets.token_urlsafe(16), url=url, requested_format=fmt,
+                  status="waiting", owner_key=user_key, source="telegram")
+        db.add(job)
+        db.commit()
+        jid = job.id
+    label = _QUALITY_LABELS.get(fmt, fmt)
+    if queue_pos == 1:
+        await context.bot.send_message(chat_id, f"📥 تم الاستلام ({label}) — جارٍ المعالجة…")
+    else:
+        await context.bot.send_message(chat_id, f"📥 تمت الإضافة للطابور — موضعك #{queue_pos} ({label})")
+    if WEBHOOK_MODE:
+        await watch_and_deliver(chat_id, jid)
+    else:
+        asyncio.create_task(watch_and_deliver(chat_id, jid))
+    return jid
+
 
 async def receive_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """يستقبل ملف كوكيز Netscape ويحفظه للمستخدم."""
@@ -145,11 +125,11 @@ async def clear_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def audio_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _set_pref(update.effective_user.id, "audio")
-    await update.message.reply_text("🎵 تم تفعيل وضع الصوت — المقاطع القادمة ستُرسل كصوت فقط.\n🎬 /video للعودة للفيديو.")
+    await update.message.reply_text("🎵 وضع الصوت مفعل — المقاطع القادمة تُرسل صوتًا مباشرة بدون سؤال.\n🔄 /reset للعودة للاختيار عند كل رابط.")
 
 async def video_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _set_pref(update.effective_user.id, "video")
-    await update.message.reply_text("🎬 وضع الفيديو مفعل — المقاطع القادمة ستُرسل كفيديو كامل.")
+    await update.message.reply_text("🎬 وضع الفيديو مفعل — تُرسل الجودة الأفضل مباشرة بدون سؤال.\n🔄 /reset للعودة للاختيار عند كل رابط.")
 
 # ============================================================
 # نظام اختيار التحميل (فيديو/صوت/دقة) — بدل زر MP3
@@ -266,40 +246,15 @@ async def on_pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # إنشاء المهمة بالجودة المختارة
     PENDING.pop(nonce, None)
-    url = pending["url"]
-    user_key = f"tg:{pending['user_id']}"
-    with SessionLocal() as db:
-        queue_pos = db.query(Job).filter(
-            Job.owner_key == user_key,
-            Job.status.in_(["waiting", "downloading", "preparing"]),
-        ).count() + 1
-        job = Job(id=secrets.token_urlsafe(16), url=url, requested_format=fmt,
-                  status="waiting", owner_key=user_key, source="telegram")
-        db.add(job)
-        db.commit()
-        jid = job.id
-
-    label = _QUALITY_LABELS.get(fmt, fmt)
     await query.answer("تم ✅")
     try:
         await query.message.delete()
     except Exception:  # noqa: BLE001
         pass
-    chat_id = pending["chat_id"]
-    if queue_pos == 1:
-        await context.bot.send_message(chat_id, f"📥 تم الاستلام ({label}) — جارٍ المعالجة…")
-    else:
-        await context.bot.send_message(chat_id, f"📥 تمت الإضافة للطابور — موضعك #{queue_pos} ({label})")
-    if WEBHOOK_MODE:
-        await watch_and_deliver(chat_id, jid)
-    else:
-        asyncio.create_task(watch_and_deliver(chat_id, jid))
+    await _create_job(pending["user_id"], pending["chat_id"], pending["url"], fmt, context)
 
 
 async def receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # رسائل تسجيل الدخول (هاتف/كود/2FA) تستهلك أولًا
-    if await handle_login_text(update, context):
-        return
     url = (update.message.text or "").strip()
     try:
         validate_public_url(url)
@@ -307,9 +262,15 @@ async def receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⚠️ {e}")
         return
 
-    # كل رابط = اختيار: فيديو/صوت/دقة قبل التحميل
-    await update.message.reply_text("📥 تم استلام الرابط…")
-    await _ask_choice(update.effective_chat.id, update.effective_user.id, url, context)
+    mode = _pref_mode(update.effective_user.id)
+    if mode == "ask":
+        # الوضع الطبيعي: اختيار فيديو/صوت/دقة عند كل رابط
+        await update.message.reply_text("📥 تم استلام الرابط…")
+        await _ask_choice(update.effective_chat.id, update.effective_user.id, url, context)
+    else:
+        # وضع ثابت (/audio أو /video): بدون سؤال
+        fmt = "audio" if mode == "audio" else "best"
+        await _create_job(update.effective_user.id, update.effective_chat.id, url, fmt, context)
 
 def _make_request(progress_cb=None):
     """مهلات طويلة + تتبع تقدم الرفع (PTB v21 حذف معامل progress من دوال الإرسال)."""
@@ -472,10 +433,9 @@ def build_application() -> Application:
     app = builder.build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("clearcookies", clear_cookies))
-    app.add_handler(CommandHandler("link2gb", link2gb))
-    app.add_handler(CommandHandler("unlink2gb", unlink2gb))
     app.add_handler(CommandHandler("audio", audio_mode))
     app.add_handler(CommandHandler("video", video_mode))
+    app.add_handler(CommandHandler("reset", reset_mode))
     app.add_handler(CallbackQueryHandler(on_pick_callback, pattern=r"^pick:"))
     # ملاحظة: filters.Document كلاس في PTB v21 ويكسر المعالج — استخدم filters.ATTACHMENT (نسخة جاهزة)
     app.add_handler(MessageHandler(filters.ATTACHMENT, receive_document))

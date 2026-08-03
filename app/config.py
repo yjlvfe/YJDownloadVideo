@@ -16,14 +16,14 @@ class Settings(BaseSettings):
     database_url: str = DEFAULT_DATABASE_URL
     redis_url: str = "redis://localhost:6379/0"
     base_url: str = DEFAULT_BASE_URL
-    remote_worker_url: str = ""
     storage_dir: str = "./storage"
-    file_ttl_seconds: int = 3600
+    file_ttl_seconds: int = 0
     max_file_size_bytes: int = 2_000_000_000
     max_duration_seconds: int = 7200
     rate_limit_per_minute: int = 10
     telegram_bot_token: str = ""
     telegram_bot_api_base: str = ""
+    telegram_webhook_url: str = ""
     telegram_api_id: int = 0
     telegram_api_hash: str = ""
     sessions_dir: str = "./data/sessions"
@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     ytdlp_bin: str = "yt-dlp"
     ffmpeg_bin: str = "ffmpeg"
     vercel_mode: bool = False
-    browser_bin: str = "chromium"
+    browser_bin: str = "chromium-browser"
     enable_browser_capture: bool = True
     request_timeout_seconds: int = 30
     cookies_dir: str = "./data/cookies"
@@ -49,45 +49,24 @@ class Settings(BaseSettings):
     )
 
     def model_post_init(self, __context) -> None:
-        """Apply safe defaults for the single Vercel deployment."""
         if not VERCEL_RUNTIME:
             return
-
         self.vercel_mode = True
-        self.remote_worker_url = ""
-        self.telegram_bot_api_base = ""
-        self.file_ttl_seconds = 0
-        self.max_file_size_bytes = min(self.max_file_size_bytes, 49_000_000)
-        self.telegram_send_limit_bytes = min(
-            self.telegram_send_limit_bytes,
-            49_000_000,
-        )
-
         runtime_root = Path("/tmp/yjdownload")
         if self.database_url == DEFAULT_DATABASE_URL:
-            self.database_url = (
-                f"sqlite+aiosqlite:///{runtime_root / 'data' / 'yjdownload.db'}"
-            )
-
-        runtime_paths = {
+            self.database_url = f"sqlite+aiosqlite:///{runtime_root / 'data' / 'yjdownload.db'}"
+        for field_name, subdirectory in {
             "storage_dir": "storage",
             "sessions_dir": "sessions",
             "cookies_dir": "cookies",
             "status_dir": "status",
-        }
-        for field_name, subdirectory in runtime_paths.items():
+        }.items():
             configured = Path(getattr(self, field_name))
             if not configured.is_absolute():
                 setattr(self, field_name, str(runtime_root / subdirectory))
-
-        production_host = (
-            os.getenv("VERCEL_PROJECT_PRODUCTION_URL")
-            or os.getenv("VERCEL_URL")
-        )
+        production_host = os.getenv("VERCEL_PROJECT_PRODUCTION_URL") or os.getenv("VERCEL_URL")
         if production_host:
             self.base_url = f"https://{production_host.strip('/')}"
-
-        # The Vercel function has no persistent Chromium process.
         self.enable_browser_capture = False
 
     @property
@@ -123,14 +102,11 @@ class Settings(BaseSettings):
 
 
 def ffmpeg_location() -> str:
-    """Return system ffmpeg or the bundled imageio-ffmpeg executable."""
     import shutil
-
     if settings.ffmpeg_bin and shutil.which(settings.ffmpeg_bin):
         return settings.ffmpeg_bin
     try:
         import imageio_ffmpeg
-
         return imageio_ffmpeg.get_ffmpeg_exe()
     except Exception:  # noqa: BLE001
         return settings.ffmpeg_bin

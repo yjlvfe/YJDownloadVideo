@@ -10,6 +10,10 @@ import pytest
 from app import config
 from app.extractor import DownloadError, MediaCandidate, UniversalExtractor
 from app.media_choice import selector_for_quality
+from app.platform_runtime import install_runtime_patches
+
+
+install_runtime_patches()
 
 
 def test_ytdlp_options_use_registry_and_bounded_retries(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -1,12 +1,27 @@
 from __future__ import annotations
 
+import logging
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
 from .config import settings
 
 MAX_BOT_UPLOAD_BYTES = 49 * 1024 * 1024
+log = logging.getLogger("vercel-upload")
+
+
+class TelegramUploadTimeout(RuntimeError):
+    """The Bot API did not finish receiving/responding within the safe window."""
+
+
+def upload_plan() -> list[tuple[str, str]]:
+    """Prefer documents because Telegram can acknowledge them without video processing."""
+    return [
+        ("sendDocument", "document"),
+        ("sendVideo", "video"),
+    ]
 
 
 def select_downloaded_file(directory: Path, max_bytes: int = MAX_BOT_UPLOAD_BYTES) -> Path:
@@ -80,53 +95,102 @@ def _download_media(source_url: str, user_id: int | None, workdir: Path) -> tupl
 
 
 def _upload_once(method: str, field_name: str, chat_id: int, media_path: Path, caption: str) -> dict:
-    from curl_cffi import CurlMime
-    from curl_cffi import requests as curl_requests
+    import requests
 
     endpoint = f"https://api.telegram.org/bot{settings.telegram_bot_token}/{method}"
-    mime = CurlMime()
-    mime.addpart(
-        name=field_name,
-        content_type="video/mp4",
-        filename="video.mp4",
-        local_path=str(media_path),
-    )
     form = {"chat_id": str(chat_id), "caption": caption}
     if method == "sendVideo":
         form["supports_streaming"] = "true"
 
+    size_bytes = media_path.stat().st_size
+    started = time.monotonic()
+    log.info(
+        "telegram upload started method=%s size_bytes=%d",
+        method,
+        size_bytes,
+    )
+
     try:
-        response = curl_requests.post(
-            endpoint,
-            data=form,
-            multipart=mime,
-            timeout=120,
-            http_version="v1",
+        with media_path.open("rb") as media_file:
+            response = requests.post(
+                endpoint,
+                data=form,
+                files={
+                    field_name: (
+                        "video.mp4",
+                        media_file,
+                        "video/mp4",
+                    )
+                },
+                headers={
+                    "Connection": "close",
+                    "Expect": "",
+                    "User-Agent": "YJDownloadVideo/1.0",
+                },
+                timeout=(20, 270),
+            )
+    except requests.exceptions.Timeout as exc:
+        elapsed = time.monotonic() - started
+        log.warning(
+            "telegram upload timed out method=%s size_bytes=%d elapsed_seconds=%.1f",
+            method,
+            size_bytes,
+            elapsed,
         )
-        try:
-            body = response.json()
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"Telegram returned HTTP {response.status_code}") from exc
-        return parse_bot_api_response(body)
-    finally:
-        close = getattr(mime, "close", None)
-        if callable(close):
-            close()
+        raise TelegramUploadTimeout(
+            f"انتهت مهلة رفع ملف حجمه {size_bytes / 1024 / 1024:.1f}MB بعد {elapsed:.0f} ثانية"
+        ) from exc
+    except requests.exceptions.RequestException as exc:
+        elapsed = time.monotonic() - started
+        log.warning(
+            "telegram upload network error method=%s size_bytes=%d elapsed_seconds=%.1f error=%s",
+            method,
+            size_bytes,
+            elapsed,
+            exc.__class__.__name__,
+        )
+        raise RuntimeError(f"تعذر الاتصال بخادم تيليجرام: {exc.__class__.__name__}") from exc
+
+    elapsed = time.monotonic() - started
+    log.info(
+        "telegram upload response method=%s size_bytes=%d elapsed_seconds=%.1f status_code=%d",
+        method,
+        size_bytes,
+        elapsed,
+        response.status_code,
+    )
+    try:
+        body = response.json()
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"Telegram returned HTTP {response.status_code}") from exc
+    return parse_bot_api_response(body)
 
 
 def download_and_upload(chat_id: int, source_url: str, user_id: int | None) -> dict:
-    """Download and upload in one Vercel invocation using libcurl multipart."""
+    """Download and upload inside one bounded Vercel invocation."""
     workdir = Path(tempfile.mkdtemp(prefix="telegram-upload-", dir=str(settings.storage_path)))
+    download_started = time.monotonic()
     try:
         media_path, title = _download_media(source_url, user_id, workdir)
-        try:
-            return _upload_once("sendVideo", "video", chat_id, media_path, title)
-        except RuntimeError as video_error:
+        size_bytes = media_path.stat().st_size
+        download_elapsed = time.monotonic() - download_started
+        log.info(
+            "telegram media ready size_bytes=%d download_seconds=%.1f",
+            size_bytes,
+            download_elapsed,
+        )
+
+        first_error: RuntimeError | None = None
+        for method, field_name in upload_plan():
             try:
-                return _upload_once("sendDocument", "document", chat_id, media_path, title)
-            except RuntimeError as document_error:
-                raise RuntimeError(
-                    f"فشل رفع الفيديو: {str(video_error)[:100]} | {str(document_error)[:100]}"
-                ) from document_error
+                return _upload_once(method, field_name, chat_id, media_path, title)
+            except TelegramUploadTimeout:
+                # A second full upload would exceed the Vercel execution window.
+                raise
+            except RuntimeError as exc:
+                first_error = exc
+                log.warning("telegram upload method failed method=%s error=%s", method, str(exc)[:160])
+
+        raise RuntimeError(f"فشل رفع الفيديو: {str(first_error or 'خطأ غير معروف')[:180]}")
     finally:
         shutil.rmtree(workdir, ignore_errors=True)

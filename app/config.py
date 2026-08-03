@@ -6,7 +6,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_DATABASE_URL = "sqlite+aiosqlite:///./data/yjdownload.db"
 DEFAULT_BASE_URL = "http://localhost:8000"
-DEFAULT_REMOTE_WORKER_URL = "https://yjvideodownloads.onrender.com"
 VERCEL_RUNTIME = os.getenv("VERCEL") == "1"
 
 
@@ -17,7 +16,7 @@ class Settings(BaseSettings):
     database_url: str = DEFAULT_DATABASE_URL
     redis_url: str = "redis://localhost:6379/0"
     base_url: str = DEFAULT_BASE_URL
-    remote_worker_url: str = DEFAULT_REMOTE_WORKER_URL
+    remote_worker_url: str = ""
     storage_dir: str = "./storage"
     file_ttl_seconds: int = 3600
     max_file_size_bytes: int = 2_000_000_000
@@ -43,18 +42,32 @@ class Settings(BaseSettings):
     secure_cookies: bool = False
     allowed_hosts: str = "localhost,127.0.0.1"
     cors_origins: str = "http://localhost:8000"
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     def model_post_init(self, __context) -> None:
-        """Apply safe defaults for Vercel's serverless runtime."""
+        """Apply safe defaults for the single Vercel deployment."""
         if not VERCEL_RUNTIME:
             return
 
         self.vercel_mode = True
-        runtime_root = Path("/tmp/yjdownload")
+        self.remote_worker_url = ""
+        self.telegram_bot_api_base = ""
+        self.file_ttl_seconds = 0
+        self.max_file_size_bytes = min(self.max_file_size_bytes, 49_000_000)
+        self.telegram_send_limit_bytes = min(
+            self.telegram_send_limit_bytes,
+            49_000_000,
+        )
 
+        runtime_root = Path("/tmp/yjdownload")
         if self.database_url == DEFAULT_DATABASE_URL:
-            self.database_url = f"sqlite+aiosqlite:///{runtime_root / 'data' / 'yjdownload.db'}"
+            self.database_url = (
+                f"sqlite+aiosqlite:///{runtime_root / 'data' / 'yjdownload.db'}"
+            )
 
         runtime_paths = {
             "storage_dir": "storage",
@@ -67,44 +80,46 @@ class Settings(BaseSettings):
             if not configured.is_absolute():
                 setattr(self, field_name, str(runtime_root / subdirectory))
 
-        # Vercel's canonical production domain is the only reliable callback URL.
-        production_host = os.getenv("VERCEL_PROJECT_PRODUCTION_URL") or os.getenv("VERCEL_URL")
+        production_host = (
+            os.getenv("VERCEL_PROJECT_PRODUCTION_URL")
+            or os.getenv("VERCEL_URL")
+        )
         if production_host:
             self.base_url = f"https://{production_host.strip('/')}"
 
-        # Chromium and large media processing run on the remote Docker worker.
+        # The Vercel function has no persistent Chromium process.
         self.enable_browser_capture = False
 
     @property
     def storage_path(self) -> Path:
-        p = Path(self.storage_dir)
-        p.mkdir(parents=True, exist_ok=True)
-        return p
+        path = Path(self.storage_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
 
     @property
     def db_path(self) -> Path:
         raw = self.database_url.split("///")[-1]
-        p = Path(raw)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        return p
+        path = Path(raw)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
 
     @property
     def cookies_path(self) -> Path:
-        p = Path(self.cookies_dir)
-        p.mkdir(parents=True, exist_ok=True)
-        return p
+        path = Path(self.cookies_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
 
     @property
     def status_path(self) -> Path:
-        p = Path(self.status_dir)
-        p.mkdir(parents=True, exist_ok=True)
-        return p
+        path = Path(self.status_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
 
     @property
     def sessions_path(self) -> Path:
-        p = Path(self.sessions_dir)
-        p.mkdir(parents=True, exist_ok=True)
-        return p
+        path = Path(self.sessions_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
 
 
 def ffmpeg_location() -> str:

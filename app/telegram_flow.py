@@ -14,15 +14,17 @@ from .media_choice import (
     QualityOption,
     SelectionStore,
     cleanup_path,
+    is_quality_key,
     normalize_qualities,
     progress_step,
+    quality_options,
     safe_media_title,
 )
 from .telegram_api import TelegramAPI
 
 
 _CALLBACK_RE = re.compile(
-    r"^pick:(?:(v|a):([A-Za-z0-9_-]{6,24})|q:([A-Za-z0-9_-]{6,24}):(original|\d{2,4}))$"
+    r"^pick:(?:(v|a):([A-Za-z0-9_-]{6,24})|q:([A-Za-z0-9_-]{6,24}):([A-Za-z0-9_-]{1,16}))$"
 )
 
 
@@ -54,13 +56,20 @@ def _quality_label(item: QualityOption) -> str:
     return f"{item.label} • ~{mib:.0f}MB"
 
 
-# جودات جاهزة فورية (بدون فحص الرابط — سريع وخفيف)
-_PRESET_QUALITIES = [
-    QualityOption(key="best", label="⭐ الأفضل", selector="best"),
-    QualityOption(key="1080", label="1080p", selector="1080"),
-    QualityOption(key="720", label="720p", selector="720"),
-    QualityOption(key="480", label="480p", selector="480"),
-]
+# Public quality choices come from one registry so labels, keys, callbacks, and
+# yt-dlp selectors cannot drift independently.
+_PRESET_QUALITIES = quality_options()
+
+
+def _supported_callback_quality(key: str) -> bool:
+    if is_quality_key(key):
+        return True
+    if key == "original":
+        return True
+    if key.isdigit():
+        height = int(key)
+        return 144 <= height <= 1080
+    return False
 
 
 def parse_callback(value: str) -> tuple[str, str, str | None] | None:
@@ -72,6 +81,8 @@ def parse_callback(value: str) -> tuple[str, str, str | None] | None:
         return ("video", simple_token, None)
     if simple_kind == "a":
         return ("audio", simple_token, None)
+    if not quality_key or not _supported_callback_quality(quality_key):
+        return None
     return ("quality", quality_token, quality_key)
 
 

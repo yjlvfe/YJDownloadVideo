@@ -1,5 +1,9 @@
+import base64
+import binascii
 import os
+import shutil
 from pathlib import Path
+from urllib.parse import urlparse
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -102,14 +106,77 @@ class Settings(BaseSettings):
 
 
 def ffmpeg_location() -> str:
-    import shutil
-    if settings.ffmpeg_bin and shutil.which(settings.ffmpeg_bin):
-        return settings.ffmpeg_bin
+    discovered = shutil.which(settings.ffmpeg_bin)
+    if discovered:
+        return discovered
     try:
         import imageio_ffmpeg
         return imageio_ffmpeg.get_ffmpeg_exe()
     except Exception:  # noqa: BLE001
         return settings.ffmpeg_bin
+
+
+def javascript_runtime_options() -> dict:
+    """Return yt-dlp's Python API configuration for the best installed JS runtime."""
+    if shutil.which("deno"):
+        return {"js_runtimes": {"deno": {}}}
+    if shutil.which("node"):
+        return {"js_runtimes": {"node": {}}}
+    if shutil.which("qjs"):
+        return {"js_runtimes": {"quickjs": {}}}
+    return {}
+
+
+def _materialize_cookie_secret(env_name: str, filename: str) -> str | None:
+    encoded = os.getenv(env_name, "").strip()
+    if not encoded:
+        return None
+    try:
+        payload = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise RuntimeError(f"{env_name} is not valid base64") from exc
+    if not payload.strip():
+        return None
+
+    target = settings.cookies_path / filename
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    temporary.write_bytes(payload)
+    os.chmod(temporary, 0o600)
+    temporary.replace(target)
+    os.chmod(target, 0o600)
+    return str(target)
+
+
+def cookie_file_for_url(url: str) -> str | None:
+    """Resolve an optional Netscape cookie file without committing credentials to Git."""
+    host = (urlparse(url).hostname or "").lower()
+    if host == "youtu.be" or host.endswith("youtube.com"):
+        platform = ("YOUTUBE_COOKIES_FILE", "YOUTUBE_COOKIES_B64", "youtube.txt")
+    elif host.endswith("instagram.com"):
+        platform = ("INSTAGRAM_COOKIES_FILE", "INSTAGRAM_COOKIES_B64", "instagram.txt")
+    else:
+        platform = ("", "", "")
+
+    explicit_name, secret_name, filename = platform
+    if explicit_name:
+        explicit = os.getenv(explicit_name, "").strip()
+        if explicit and Path(explicit).is_file():
+            return explicit
+        materialized = _materialize_cookie_secret(secret_name, filename)
+        if materialized:
+            return materialized
+        platform_file = settings.cookies_path / filename
+        if platform_file.is_file():
+            return str(platform_file)
+
+    global_explicit = os.getenv("YTDLP_COOKIES_FILE", "").strip()
+    if global_explicit and Path(global_explicit).is_file():
+        return global_explicit
+    global_materialized = _materialize_cookie_secret("YTDLP_COOKIES_B64", "cookies.txt")
+    if global_materialized:
+        return global_materialized
+    fallback = settings.cookies_path / "cookies.txt"
+    return str(fallback) if fallback.is_file() else None
 
 
 settings = Settings()

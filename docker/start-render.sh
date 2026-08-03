@@ -100,7 +100,7 @@ fi
 rm -f "$TBA_CHECK"
 
 export TELEGRAM_BOT_API_BASE="$LOCAL_API"
-uvicorn app.main:app --host 0.0.0.0 --port "$PORT" &
+uvicorn app.asgi:app --host 0.0.0.0 --port "$PORT" &
 APP_PID=$!
 
 app_ready=false

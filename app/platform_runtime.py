@@ -32,12 +32,6 @@ def _common_options(extractor: Any, *, skip_download: bool = False) -> dict[str,
         options["remote_components"] = {"ejs:github"}
     if extractor.cookies_file:
         options["cookiefile"] = extractor.cookies_file
-    try:
-        import curl_cffi  # noqa: F401
-    except ImportError:
-        pass
-    else:
-        options["impersonate"] = "chrome"
     return options
 
 
@@ -57,25 +51,8 @@ def install_runtime_patches() -> None:
         options.update(javascript_runtime_options())
         if shutil.which("node") or shutil.which("deno"):
             options["remote_components"] = {"ejs:github"}
-        # Let current yt-dlp choose clients and PO-token-aware fallbacks.
-        # The old android/web/ios override causes LOGIN_REQUIRED on current YouTube.
-        extractor_args = dict(options.get("extractor_args") or {})
-        youtube_args = dict(extractor_args.get("youtube") or {})
-        youtube_args.pop("player_client", None)
-        if youtube_args:
-            extractor_args["youtube"] = youtube_args
-        else:
-            extractor_args.pop("youtube", None)
-        if extractor_args:
-            options["extractor_args"] = extractor_args
-        else:
-            options.pop("extractor_args", None)
-        try:
-            import curl_cffi  # noqa: F401
-        except ImportError:
-            pass
-        else:
-            options["impersonate"] = "chrome"
+        # 🎯 مهم: عميل android/web/ios — إصلاح مجرّب يتجاوز حجب يوتيوب
+        # (لا تحذف extractor_args — حذفها يعيد LOGIN_REQUIRED على يوتيوب)
         options["source_address"] = "0.0.0.0"
         options["no_warnings"] = False
         return options

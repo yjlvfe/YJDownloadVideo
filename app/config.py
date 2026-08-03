@@ -58,10 +58,16 @@ class Settings(BaseSettings):
 
 
 def ffmpeg_location() -> str:
-    """مسار ffmpeg: الثنائي النظامي أولًا، ثم ثنائي imageio-ffmpeg المدمج (يعمل على Vercel)."""
+    """مسار ffmpeg المطلق: ثنائي النظام أولًا، ثم ثنائي imageio-ffmpeg المدمج.
+
+    ⚠️ يجب أن يكون مسارًا مطلقًا — yt-dlp لا يحل الأسماء المجردة،
+    وتمرير 'ffmpeg' يجعل كل دمج (merge) يفشل بـ "ffmpeg is not installed".
+    """
     import shutil
-    if settings.ffmpeg_bin and shutil.which(settings.ffmpeg_bin):
-        return settings.ffmpeg_bin
+    if settings.ffmpeg_bin:
+        resolved = shutil.which(settings.ffmpeg_bin)
+        if resolved:
+            return resolved
     try:
         import imageio_ffmpeg
         return imageio_ffmpeg.get_ffmpeg_exe()

@@ -243,9 +243,11 @@ class UniversalExtractor:
                     res = self._download_candidate(cand, outdir, referer=url)
                     if best_res is None:
                         best_res = res
-                    if _has_audio(res["path"]):
+                    ok_audio = _has_audio(res["path"])
+                    ok_video = preferred == "audio" or _has_video(res["path"])
+                    if ok_audio and ok_video:
                         return res
-                    last_err = "المقطع المحمّل بدون صوت — جربت بدائل"
+                    last_err = "المقطع المحمّل ناقص (صوت/فيديو) — جربت بدائل"
                 except Exception as e:  # noqa: BLE001
                     last_err = str(e)[:200]
             if best_res:
@@ -430,6 +432,9 @@ class UniversalExtractor:
             raise DownloadError("لم يُنشأ ملف")
         if not _has_audio(path):
             raise DownloadError("المقطع المتاح بدون صوت (لا يوجد تدفق صوتي في المصدر)")
+        if preferred != "audio" and not _has_video(path):
+            # يمنع إرسال ملف صوتي كمقطع فيديو فاضي (مشكلة إنستغرام)
+            raise DownloadError("المقطع المتاح بدون فيديو (لا يوجد تدفق فيديو في المصدر)")
         # نظّف أي ملفات يتيمة في مجلد المهمة (بقايا محاولات فاشلة)
         for p in outdir.iterdir():
             if p.is_file() and p != path:
@@ -968,6 +973,19 @@ def _has_audio(path) -> bool:
         return bool(r.stdout.strip())
     except Exception:  # noqa: BLE001
         return True  # عند عدم توفر ffprobe لا نمنع التحميل
+
+
+def _has_video(path) -> bool:
+    """يفحص وجود تدفق فيديو في الملف عبر ffprobe (يمنع إرسال ملفات صوتية كمقاطع فاضية)."""
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v",
+             "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True, timeout=30,
+        )
+        return bool(r.stdout.strip())
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def _free_port() -> int:

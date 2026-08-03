@@ -39,6 +39,16 @@ def test_runtime_defaults_are_safe_and_observable(monkeypatch: pytest.MonkeyPatc
     assert "worker-secret" not in repr(settings)
 
 
+def test_runtime_derives_sha_from_render_or_vercel(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GIT_SHA", raising=False)
+    monkeypatch.setenv("RENDER_GIT_COMMIT", "render-sha")
+    monkeypatch.setenv("VERCEL_GIT_COMMIT_SHA", "vercel-sha")
+    assert Settings(_env_file=None).git_sha == "render-sha"
+
+    monkeypatch.delenv("RENDER_GIT_COMMIT", raising=False)
+    assert Settings(_env_file=None).git_sha == "vercel-sha"
+
+
 def test_production_rejects_the_default_signing_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("SECRET_KEY", "change-me")

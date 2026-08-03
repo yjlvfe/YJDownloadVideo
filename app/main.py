@@ -6,8 +6,9 @@ import re
 import secrets
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -244,6 +245,112 @@ def download(token: str):
         )
 
 
+def _upstream_media_headers(headers: httpx.Headers, *, head_request: bool = False) -> dict[str, str]:
+    content_type = (headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+    if content_type.startswith("text/") or content_type in {"application/json", "application/xml"}:
+        raise HTTPException(502, "المصدر أعاد صفحة بدل ملف الفيديو")
+
+    result = {
+        "Content-Type": content_type or "video/mp4",
+        "Accept-Ranges": headers.get("accept-ranges") or "bytes",
+        "Cache-Control": "private, no-store",
+        "Content-Disposition": "inline; filename=video.mp4",
+    }
+    for source_name, target_name in (
+        ("content-range", "Content-Range"),
+        ("etag", "ETag"),
+        ("last-modified", "Last-Modified"),
+    ):
+        value = headers.get(source_name)
+        if value:
+            result[target_name] = value
+
+    content_length = headers.get("content-length")
+    if head_request:
+        content_range = headers.get("content-range") or ""
+        if "/" in content_range:
+            total = content_range.rsplit("/", 1)[-1]
+            if total.isdigit():
+                content_length = total
+    if content_length and content_length.isdigit():
+        result["Content-Length"] = content_length
+    return result
+
+
+@app.api_route("/telegram/media/{token}", methods=["GET", "HEAD"])
+async def telegram_media_proxy(token: str, request: Request):
+    """Stream protected CDN media with the browser headers required by the source."""
+    from .media_proxy import proxy_headers, read_proxy_token
+
+    try:
+        payload = read_proxy_token(token, secret=settings.secret_key)
+        media_url = validate_public_url(str(payload["media_url"]))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(404, "رابط الوسائط منتهي أو غير صالح") from exc
+
+    request_range = request.headers.get("range")
+    upstream_headers = proxy_headers(payload.get("headers") or {}, request_range)
+    timeout = httpx.Timeout(300.0, connect=20.0)
+    limits = httpx.Limits(max_connections=1, max_keepalive_connections=0)
+
+    if request.method == "HEAD":
+        probe_headers = proxy_headers(payload.get("headers") or {}, "bytes=0-0")
+        try:
+            async with httpx.AsyncClient(
+                timeout=timeout,
+                limits=limits,
+                follow_redirects=True,
+                trust_env=False,
+            ) as client:
+                async with client.stream("GET", media_url, headers=probe_headers) as upstream:
+                    if upstream.status_code not in (200, 206):
+                        raise HTTPException(502, f"تعذر جلب الفيديو من المصدر ({upstream.status_code})")
+                    headers = _upstream_media_headers(upstream.headers, head_request=True)
+                    return Response(status_code=200, headers=headers)
+        except HTTPException:
+            raise
+        except httpx.HTTPError as exc:
+            raise HTTPException(502, "تعذر الاتصال بمصدر الفيديو") from exc
+
+    client = httpx.AsyncClient(
+        timeout=timeout,
+        limits=limits,
+        follow_redirects=True,
+        trust_env=False,
+    )
+    try:
+        upstream_request = client.build_request("GET", media_url, headers=upstream_headers)
+        upstream = await client.send(upstream_request, stream=True)
+        if upstream.status_code not in (200, 206):
+            status_code = upstream.status_code
+            await upstream.aclose()
+            await client.aclose()
+            raise HTTPException(502, f"تعذر جلب الفيديو من المصدر ({status_code})")
+        response_headers = _upstream_media_headers(upstream.headers)
+    except HTTPException:
+        await client.aclose()
+        raise
+    except httpx.HTTPError as exc:
+        await client.aclose()
+        raise HTTPException(502, "تعذر الاتصال بمصدر الفيديو") from exc
+
+    async def body_iterator():
+        try:
+            async for chunk in upstream.aiter_raw(256 * 1024):
+                if chunk:
+                    yield chunk
+        finally:
+            await upstream.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        body_iterator(),
+        status_code=upstream.status_code,
+        headers=response_headers,
+        media_type=response_headers.get("Content-Type", "video/mp4"),
+    )
+
+
 @app.get("/api/telegram/status")
 async def telegram_status(repair: bool = False, drop_pending: bool = False) -> dict:
     """Return safe webhook diagnostics and optionally repair the Telegram webhook."""
@@ -307,12 +414,11 @@ async def telegram_webhook(request: Request) -> dict:
         data = await request.json()
 
         # On Vercel, avoid downloading media into /tmp and uploading it again.
-        # Telegram's Bot API can fetch an HTTP media URL directly.
         if settings.vercel_mode:
             from .vercel_remote import handle_vercel_remote_update
 
             if await handle_vercel_remote_update(data):
-                return {"ok": True, "delivery": "remote"}
+                return {"ok": True, "delivery": "proxy"}
 
         from telegram import Update
         from .bot import handle_update_webhook, webhook_bot

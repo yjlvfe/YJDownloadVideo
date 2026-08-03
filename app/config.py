@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     database_url: str = DEFAULT_DATABASE_URL
     redis_url: str = "redis://localhost:6379/0"
     base_url: str = DEFAULT_BASE_URL
+    remote_worker_url: str = ""
     storage_dir: str = "./storage"
     file_ttl_seconds: int = 3600
     max_file_size_bytes: int = 2_000_000_000
@@ -23,7 +24,6 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 10
     telegram_bot_token: str = ""
     telegram_bot_api_base: str = ""
-    telegram_webhook_url: str = ""
     telegram_api_id: int = 0
     telegram_api_hash: str = ""
     sessions_dir: str = "./data/sessions"
@@ -53,10 +53,20 @@ class Settings(BaseSettings):
             return
 
         self.vercel_mode = True
-        runtime_root = Path("/tmp/yjdownload")
+        self.remote_worker_url = ""
+        self.telegram_bot_api_base = ""
+        self.file_ttl_seconds = 0
+        self.max_file_size_bytes = min(self.max_file_size_bytes, 49_000_000)
+        self.telegram_send_limit_bytes = min(
+            self.telegram_send_limit_bytes,
+            49_000_000,
+        )
 
+        runtime_root = Path("/tmp/yjdownload")
         if self.database_url == DEFAULT_DATABASE_URL:
-            self.database_url = f"sqlite+aiosqlite:///{runtime_root / 'data' / 'yjdownload.db'}"
+            self.database_url = (
+                f"sqlite+aiosqlite:///{runtime_root / 'data' / 'yjdownload.db'}"
+            )
 
         runtime_paths = {
             "storage_dir": "storage",
@@ -69,7 +79,10 @@ class Settings(BaseSettings):
             if not configured.is_absolute():
                 setattr(self, field_name, str(runtime_root / subdirectory))
 
-        production_host = os.getenv("VERCEL_PROJECT_PRODUCTION_URL") or os.getenv("VERCEL_URL")
+        production_host = (
+            os.getenv("VERCEL_PROJECT_PRODUCTION_URL")
+            or os.getenv("VERCEL_URL")
+        )
         if production_host:
             self.base_url = f"https://{production_host.strip('/')}"
         self.enable_browser_capture = False

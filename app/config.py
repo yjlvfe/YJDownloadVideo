@@ -5,6 +5,7 @@ import shutil
 from pathlib import Path
 from urllib.parse import urlparse
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,27 +18,33 @@ VERCEL_RUNTIME = os.getenv("VERCEL") == "1"
 class Settings(BaseSettings):
     app_name: str = "YJDownloadVideo"
     environment: str = "development"
-    secret_key: str = "change-me"
+    git_sha: str = "unknown"
+    secret_key: str = Field(default="change-me", repr=False)
+    worker_shared_secret: str = Field(default="", repr=False)
+    admin_api_token: str = Field(default="", repr=False)
     database_url: str = DEFAULT_DATABASE_URL
     redis_url: str = "redis://localhost:6379/0"
     base_url: str = DEFAULT_BASE_URL
     remote_worker_url: str = DEFAULT_REMOTE_WORKER_URL
     storage_dir: str = "./storage"
-    file_ttl_seconds: int = 0
+    file_ttl_seconds: int = 3600
     max_file_size_bytes: int = 2_000_000_000
     max_duration_seconds: int = 7200
     rate_limit_per_minute: int = 10
-    telegram_bot_token: str = ""
+    telegram_bot_token: str = Field(default="", repr=False)
     telegram_bot_api_base: str = ""
     telegram_webhook_url: str = ""
     telegram_api_id: int = 0
-    telegram_api_hash: str = ""
+    telegram_api_hash: str = Field(default="", repr=False)
     sessions_dir: str = "./data/sessions"
     telegram_send_limit_bytes: int = 2_000_000_000
     max_active_jobs_per_ip: int = 50
     max_active_jobs_per_telegram_user: int = 50
     ytdlp_bin: str = "yt-dlp"
     ffmpeg_bin: str = "ffmpeg"
+    youtube_proxy_url: str = ""
+    enable_public_youtube_fallback: bool = False
+    youtube_circuit_cooldown_seconds: int = 900
     vercel_mode: bool = False
     browser_bin: str = "chromium-browser"
     enable_browser_capture: bool = True
@@ -55,6 +62,9 @@ class Settings(BaseSettings):
     )
 
     def model_post_init(self, __context) -> None:
+        if self.environment.strip().lower() in {"production", "prod"} and self.secret_key == "change-me":
+            raise ValueError("SECRET_KEY must be configured in production")
+
         if not VERCEL_RUNTIME:
             return
         self.vercel_mode = True

@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import deque
-from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 from yt_dlp import YoutubeDL
 
 from .config import settings
+from .media_proxy import make_proxy_token
 from .security import validate_public_url
 
 log = logging.getLogger("vercel-remote")
@@ -31,7 +32,7 @@ def _remember_update(update_id: int | None) -> bool:
     return True
 
 
-def select_remote_url(info: dict) -> str | None:
+def _select_remote_format(info: dict) -> dict | None:
     """Choose one HTTP MP4 format that already contains video and audio."""
     direct = info.get("url")
     if (
@@ -42,9 +43,9 @@ def select_remote_url(info: dict) -> str | None:
         and info.get("vcodec") not in (None, "none")
         and info.get("acodec") not in (None, "none")
     ):
-        return direct
+        return info
 
-    candidates: list[tuple[int, str]] = []
+    candidates: list[tuple[int, dict]] = []
     for item in info.get("formats") or []:
         media_url = item.get("url")
         if not isinstance(media_url, str) or not media_url.startswith(("https://", "http://")):
@@ -61,12 +62,21 @@ def select_remote_url(info: dict) -> str | None:
             continue
         height = int(item.get("height") or 0)
         score = height + (100 if item.get("format_note") else 0)
-        candidates.append((score, media_url))
+        candidates.append((score, item))
 
     if not candidates:
         return None
     candidates.sort(key=lambda value: value[0], reverse=True)
     return candidates[0][1]
+
+
+def select_remote_url(info: dict) -> str | None:
+    """Compatibility helper used by tests and callers that only need the URL."""
+    selected = _select_remote_format(info)
+    if not selected:
+        return None
+    media_url = selected.get("url")
+    return media_url if isinstance(media_url, str) else None
 
 
 def _extract_remote_media(url: str, user_id: int | None) -> dict:
@@ -76,6 +86,10 @@ def _extract_remote_media(url: str, user_id: int | None) -> dict:
         if candidate.is_file():
             cookie_file = str(candidate)
 
+    browser_user_agent = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36"
+    )
     opts = {
         "quiet": True,
         "no_warnings": True,
@@ -84,12 +98,7 @@ def _extract_remote_media(url: str, user_id: int | None) -> dict:
         "socket_timeout": 20,
         "retries": 2,
         "format": "best[ext=mp4][vcodec!=none][acodec!=none]/best[vcodec!=none][acodec!=none]",
-        "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36"
-            )
-        },
+        "http_headers": {"User-Agent": browser_user_agent},
     }
     if cookie_file:
         opts["cookiefile"] = cookie_file
@@ -106,15 +115,47 @@ def _extract_remote_media(url: str, user_id: int | None) -> dict:
     if info.get("is_live"):
         raise RuntimeError("البث المباشر غير مدعوم")
 
-    remote_url = select_remote_url(info)
-    if not remote_url:
+    selected = _select_remote_format(info)
+    if not selected:
         raise RuntimeError("لا توجد نسخة MP4 مباشرة تجمع الصوت والفيديو")
 
+    media_url = selected.get("url")
+    if not isinstance(media_url, str):
+        raise RuntimeError("رابط الفيديو المباشر غير صالح")
+
+    request_headers: dict[str, str] = {}
+    for header_source in (info.get("http_headers") or {}, selected.get("http_headers") or {}):
+        if not isinstance(header_source, dict):
+            continue
+        for key, value in header_source.items():
+            if value is not None:
+                request_headers[str(key)] = str(value)
+
+    webpage_url = str(info.get("webpage_url") or url)
+    request_headers.setdefault("User-Agent", browser_user_agent)
+    request_headers.setdefault("Referer", webpage_url)
+    parsed = urlsplit(webpage_url)
+    if parsed.scheme in ("http", "https") and parsed.netloc:
+        request_headers.setdefault("Origin", f"{parsed.scheme}://{parsed.netloc}")
+
     return {
-        "url": remote_url,
+        "url": media_url,
+        "source_url": url,
+        "headers": request_headers,
         "title": str(info.get("title") or "الفيديو")[:900],
         "duration": int(info.get("duration") or 0),
     }
+
+
+def _proxy_url(media: dict) -> str:
+    token = make_proxy_token(
+        media_url=media["url"],
+        source_url=media["source_url"],
+        headers=media.get("headers") or {},
+        secret=settings.secret_key,
+        ttl_seconds=900,
+    )
+    return f"{settings.base_url.rstrip('/')}/telegram/media/{token}"
 
 
 async def _telegram_call(method: str, payload: dict, timeout: float = 40.0) -> dict:
@@ -153,7 +194,7 @@ async def _edit_status(chat_id: int, message_id: int | None, text: str) -> None:
 
 
 async def handle_vercel_remote_update(data: dict) -> bool:
-    """Handle URL messages without downloading media into Vercel's filesystem."""
+    """Handle URL messages without storing media in Vercel's filesystem."""
     message = data.get("message") or data.get("edited_message")
     if not isinstance(message, dict):
         return False
@@ -200,11 +241,12 @@ async def handle_vercel_remote_update(data: dict) -> bool:
         await _edit_status(chat_id, status_id, f"❌ تعذر استخراج الفيديو: {str(exc)[:220]}")
         return True
 
-    await _edit_status(chat_id, status_id, "📤 تم العثور على الفيديو، تيليجرام يجلبه الآن…")
+    await _edit_status(chat_id, status_id, "📤 تم العثور على الفيديو، جارٍ تمريره إلى تيليجرام…")
+    media_proxy_url = _proxy_url(media)
 
     payload = {
         "chat_id": chat_id,
-        "video": media["url"],
+        "video": media_proxy_url,
         "caption": media["title"],
         "supports_streaming": True,
     }
@@ -212,23 +254,23 @@ async def handle_vercel_remote_update(data: dict) -> bool:
         payload["duration"] = media["duration"]
 
     try:
-        await asyncio.wait_for(_telegram_call("sendVideo", payload, timeout=105), timeout=110)
+        await asyncio.wait_for(_telegram_call("sendVideo", payload, timeout=150), timeout=155)
     except Exception as video_error:  # noqa: BLE001
         try:
             await asyncio.wait_for(
                 _telegram_call(
                     "sendDocument",
-                    {"chat_id": chat_id, "document": media["url"], "caption": media["title"]},
-                    timeout=105,
+                    {"chat_id": chat_id, "document": media_proxy_url, "caption": media["title"]},
+                    timeout=150,
                 ),
-                timeout=110,
+                timeout=155,
             )
         except Exception as document_error:  # noqa: BLE001
-            log.warning("Telegram remote fetch failed: video=%s document=%s", video_error, document_error)
+            log.warning("Telegram proxy fetch failed: video=%s document=%s", video_error, document_error)
             await _edit_status(
                 chat_id,
                 status_id,
-                "❌ تيليجرام لم يستطع جلب الملف من المصدر. لن يظل الطلب معلّقًا؛ جرّب رابطًا آخر أو استخدم الموقع.",
+                "❌ تعذر تمرير الفيديو إلى تيليجرام. تم إيقاف الطلب بدل تركه معلّقًا.",
             )
             return True
 

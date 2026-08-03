@@ -1,6 +1,8 @@
 import hashlib
 import hmac
+import logging
 import os
+import re
 import secrets
 from pathlib import Path
 
@@ -12,6 +14,10 @@ from pydantic import BaseModel, Field
 from .config import settings
 from .db import Job, SessionLocal, init_db
 from .security import read_token, validate_public_url
+
+# python-telegram-bot/httpx may otherwise log Bot API URLs containing the bot token.
+for logger_name in ("httpx", "httpcore", "telegram"):
+    logging.getLogger(logger_name).setLevel(logging.WARNING)
 
 app = FastAPI(title=settings.app_name)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -44,6 +50,53 @@ def job_json(job: Job | None) -> dict:
         "error": job.error,
         "download_url": f"/download/{job.download_token}" if job.download_token else None,
     }
+
+
+def normalize_formats(raw_formats: list[dict]) -> list[dict]:
+    """Show one option per resolution and always request audio with video.
+
+    yt-dlp frequently reports duplicate video-only formats. Selecting one of those
+    made the worker download it, discover it had no audio, then download again.
+    """
+    unique: dict[tuple[int, str], dict] = {}
+    for item in raw_formats or []:
+        label = str(item.get("label") or "")
+        match = re.match(r"\s*(\d+)p\s*/\s*([^\s]+)", label, re.IGNORECASE)
+        if not match:
+            continue
+        height = int(match.group(1))
+        extension = match.group(2).lower()
+        size = item.get("size")
+        key = (height, extension)
+        candidate = {
+            "id": (
+                f"bestvideo[height<={height}]+bestaudio/"
+                f"best[height<={height}]"
+            ),
+            "label": f"{height}p / {extension}",
+            "size": size,
+        }
+        previous = unique.get(key)
+        previous_size = (previous or {}).get("size") or 0
+        if previous is None or (size or 0) > previous_size:
+            unique[key] = candidate
+
+    quality_options = [
+        unique[key]
+        for key in sorted(unique, key=lambda value: (value[0], value[1]))
+    ]
+    if not quality_options:
+        quality_options = [
+            {"id": "1080", "label": "1080p", "size": None},
+            {"id": "720", "label": "720p", "size": None},
+            {"id": "480", "label": "480p", "size": None},
+        ]
+
+    return [
+        {"id": "best", "label": "الأفضل تلقائيًا", "size": None},
+        *quality_options,
+        {"id": "audio", "label": "صوت فقط", "size": None},
+    ]
 
 
 def telegram_webhook_url() -> str:
@@ -88,7 +141,7 @@ def inspect(data: InspectRequest) -> dict:
         "thumbnail": result.get("thumbnail"),
         "duration": result.get("duration"),
         "source": result.get("source"),
-        "formats": result.get("formats", []),
+        "formats": normalize_formats(result.get("formats", [])),
     }
 
 
@@ -192,7 +245,7 @@ def download(token: str):
 
 
 @app.get("/api/telegram/status")
-async def telegram_status(repair: bool = False) -> dict:
+async def telegram_status(repair: bool = False, drop_pending: bool = False) -> dict:
     """Return safe webhook diagnostics and optionally repair the Telegram webhook."""
     if not settings.telegram_bot_token:
         return {
@@ -215,7 +268,7 @@ async def telegram_status(repair: bool = False) -> dict:
                         url=expected_url,
                         secret_token=telegram_webhook_secret(),
                         allowed_updates=Update.ALL_TYPES,
-                        drop_pending_updates=False,
+                        drop_pending_updates=drop_pending,
                     )
                 )
             info = await bot.get_webhook_info()
@@ -232,6 +285,7 @@ async def telegram_status(repair: bool = False) -> dict:
         "configured": True,
         "connected": info.url.rstrip("/") == expected_url.rstrip("/"),
         "repaired": repaired,
+        "dropped_pending": bool(repair and drop_pending),
         "expected_url": expected_url,
         "current_url": info.url,
         "pending_updates": info.pending_update_count,

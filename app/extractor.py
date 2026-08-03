@@ -393,9 +393,32 @@ class UniversalExtractor:
             files = [p for p in outdir.iterdir() if p.is_file()]
             if files:
                 path = max(files, key=lambda p: p.stat().st_mtime)
-        except Exception:  # noqa: BLE001
+        except Exception as first_err:  # noqa: BLE001
             if preferred != "audio":
-                raise
+                # 🎯 يوتيوب: 403 من googlevideo = حجب IP/توقيع من يوتيوب —
+                # أعد المحاولة بعملاء آخرين (ios/web/tv) قبل الاستسلام
+                low_err = str(first_err).lower()
+                if "googlevideo" in low_err and "403" in low_err:
+                    for client in ("ios", "web", "tv"):
+                        try:
+                            opts_c = self._base_ytdlp_opts(outdir, preferred)
+                            opts_c["extractor_args"] = {"youtube": {"player_client": [client]}}
+                            opts_c["outtmpl"] = str(outdir / "%(title).120s_alt.%(ext)s")
+                            with YoutubeDL(opts_c) as ydl:
+                                info_c = ydl.extract_info(url, download=True)
+                            alt_files = [p for p in outdir.glob("*_alt.*") if p.is_file()]
+                            if alt_files:
+                                cand = max(alt_files, key=lambda p: p.stat().st_mtime)
+                                if _has_audio(cand) and (preferred == "audio" or _has_video(cand)):
+                                    info = info_c
+                                    final = cand.with_name(cand.name.replace("_alt", ""))
+                                    cand.rename(final)
+                                    path = final
+                                    break
+                        except Exception:  # noqa: BLE001
+                            continue
+                if info is None:
+                    raise first_err
             # وضع الصوت: التنسيق "الصوتي" المعلن قد يكون بلا صوت فعليًا — نكمل بالمحاولة البديلة
 
         # بعض المواقع (تيك توك) تعلن صوتًا ولا توفره فعليًا (HEVC بلا صوت).
@@ -843,18 +866,19 @@ class UniversalExtractor:
         title = _safe_filename(cand.title or urlparse(cand.url).netloc or "video")
         ext = _ext_from_url(cand.url)
         dest = outdir / f"{title}.{ext}"
-        with httpx.stream("GET", cand.url, headers=headers, follow_redirects=True,
-                          timeout=60) as r:
-            r.raise_for_status()
-            ctype = (r.headers.get("content-type") or "").lower()
-            if ctype and not (ctype.startswith("video/") or ctype in (
-                    "application/octet-stream", "application/x-mpegurl",
-                    "application/vnd.apple.mpegurl", "binary/octet-stream")):
-                raise DownloadError(f"الرابط لم يُرجع فيديو (Content-Type: {ctype})")
-            total = int(r.headers.get("content-length") or 0)
-            if self.max_filesize and total > self.max_filesize:
-                raise DownloadError("حجم الفيديو يتجاوز الحد المسموح")
-            n = 0
+        try:
+            with httpx.stream("GET", cand.url, headers=headers, follow_redirects=True,
+                              timeout=60) as r:
+                r.raise_for_status()
+                ctype = (r.headers.get("content-type") or "").lower()
+                if ctype and not (ctype.startswith("video/") or ctype in (
+                        "application/octet-stream", "application/x-mpegurl",
+                        "application/vnd.apple.mpegurl", "binary/octet-stream")):
+                    raise DownloadError(f"الرابط لم يُرجع فيديو (Content-Type: {ctype})")
+                total = int(r.headers.get("content-length") or 0)
+                if self.max_filesize and total > self.max_filesize:
+                    raise DownloadError("حجم الفيديو يتجاوز الحد المسموح")
+                n = 0
             with open(dest, "wb") as f:
                 for chunk in r.iter_bytes(65536):
                     f.write(chunk)
@@ -866,6 +890,33 @@ class UniversalExtractor:
                                                 "total_bytes": total or None})
                         except Exception:  # noqa: BLE001
                             pass
+        except httpx.HTTPStatusError as http_err:
+            # 🎯 403/410 على رابط مباشر (حجب IP/توقيع): سلّم الرابط لـ yt-dlp قبل الاستسلام —
+            # يتعامل مع التوقيعات والهيدرات المطلوبة (مشكلة googlevideo)
+            if http_err.response.status_code in (403, 410):
+                from yt_dlp import YoutubeDL
+                try:
+                    opts = self._base_ytdlp_opts(outdir, "best")
+                    if cand.cookies_file:
+                        opts["cookiefile"] = cand.cookies_file
+                    if self.referer_headers:
+                        opts["http_headers"]["Referer"] = referer
+                    if cand.title:
+                        opts["outtmpl"] = str(outdir / f"{_safe_filename(cand.title)}.%(ext)s")
+                    with YoutubeDL(opts) as ydl:
+                        info = ydl.extract_info(cand.url, download=True)
+                    files = [p for p in outdir.iterdir() if p.is_file()]
+                    if not files:
+                        raise DownloadError("لم يُنشأ ملف")
+                    p2 = max(files, key=lambda p: p.stat().st_mtime)
+                    return {"path": str(p2), "title": info.get("title") or cand.title,
+                            "duration": info.get("duration"),
+                            "thumbnail": info.get("thumbnail") or "",
+                            "ext": p2.suffix.lstrip(".")}
+                except Exception as ydl_err:  # noqa: BLE001
+                    raise DownloadError(f"فشل التحميل المباشر ({http_err.response.status_code}) "
+                                        f"وبواسطة yt-dlp: {str(ydl_err)[:150]}") from ydl_err
+            raise
         # تحقق من البايتات السحرية: mp4 يبدأ بـ ftyp، webm/mkv بـ 1A45DFA3
         with open(dest, "rb") as f:
             head = f.read(16)

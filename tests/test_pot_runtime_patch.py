@@ -6,7 +6,7 @@ from pathlib import Path
 from app import extractor as extractor_module
 from app import pot_runtime_patch as pot_patch_module
 from app.extractor import DownloadError, MediaCandidate, UniversalExtractor
-from app.pot_runtime_patch import _provider_extractor_args
+from app.pot_runtime_patch import _canonical_youtube_url, _provider_extractor_args
 
 
 def test_po_token_provider_uses_default_clients_then_mweb_with_visitor_binding(monkeypatch):
@@ -51,6 +51,15 @@ def test_browser_po_token_provider_defaults_to_safe_wrapper(monkeypatch):
     monkeypatch.delenv("WPC_BROWSER_BIN", raising=False)
     args = _provider_extractor_args()
     assert args["youtubepot-wpc"]["browser_path"] == ["/usr/local/bin/chromium-wpc"]
+
+
+def test_shorts_url_is_canonicalized_to_watch_url():
+    assert _canonical_youtube_url(
+        "https://youtube.com/shorts/T7DA7VTZ_Zs?si=1F9UnPcRym93-Tyu"
+    ) == "https://www.youtube.com/watch?v=T7DA7VTZ_Zs"
+    assert _canonical_youtube_url(
+        "https://youtu.be/kTRs4ycFp_o?si=1T_A4IsWT8fxnkce"
+    ) == "https://www.youtube.com/watch?v=kTRs4ycFp_o"
 
 
 def test_youtube_uses_wpc_before_cdp_after_primary_provider_fails(monkeypatch, tmp_path: Path):

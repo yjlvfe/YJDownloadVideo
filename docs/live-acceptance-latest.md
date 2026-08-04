@@ -3,8 +3,10 @@
 Overall: **FAIL**
 
 ## tiktok
-Inspection: **FAIL**
-- `unclassified`: `HTTP 502: invalid JSON response`
+Inspection: **PASS**
+- `best`: **PASS** — 5021299 bytes, video=True, audio=True, height=1024
+- `1024`: **PASS** — 5021299 bytes, video=True, audio=True, height=1024
+- `audio`: **PASS** — 684001 bytes, video=False, audio=True, height=0
 
 ## instagram
 Inspection: **PASS**
@@ -15,13 +17,13 @@ Inspection: **PASS**
 
 ## youtube
 Inspection: **FAIL**
-- `unclassified`: `HTTP 502: invalid JSON response`
+- `unclassified`: `تعذر قراءة الفيديو: لم يُعثر على أي فيديو في هذا الرابط. yt-dlp: متخطى`
 
 ## youtube
 Inspection: **PASS**
-- `best`: **FAIL** [youtube_fragment_forbidden] `فشل التحميل: youtube_fragment_forbidden 💡 يوتيوب يحجب خوادم الاستضافة (فحص روبوت). الحل المضمون: أضف كوكيز يوتيوب من متصفحك عبر متغير YOUTUBE_COOKIES_B64 في إعدادات الخادم، أو أرسل ملف كوكيز للبوت (Get cookies.txt) مرة و`
-- `1080`: **FAIL** [youtube_fragment_forbidden] `فشل التحميل: youtube_fragment_forbidden 💡 يوتيوب يحجب خوادم الاستضافة (فحص روبوت). الحل المضمون: أضف كوكيز يوتيوب من متصفحك عبر متغير YOUTUBE_COOKIES_B64 في إعدادات الخادم، أو أرسل ملف كوكيز للبوت (Get cookies.txt) مرة و`
-- `720`: **FAIL** [youtube_fragment_forbidden] `فشل التحميل: youtube_fragment_forbidden 💡 يوتيوب يحجب خوادم الاستضافة (فحص روبوت). الحل المضمون: أضف كوكيز يوتيوب من متصفحك عبر متغير YOUTUBE_COOKIES_B64 في إعدادات الخادم، أو أرسل ملف كوكيز للبوت (Get cookies.txt) مرة و`
-- `480`: **FAIL** [youtube_fragment_forbidden] `فشل التحميل: youtube_fragment_forbidden 💡 يوتيوب يحجب خوادم الاستضافة (فحص روبوت). الحل المضمون: أضف كوكيز يوتيوب من متصفحك عبر متغير YOUTUBE_COOKIES_B64 في إعدادات الخادم، أو أرسل ملف كوكيز للبوت (Get cookies.txt) مرة و`
-- `audio`: **FAIL** [youtube_fragment_forbidden] `فشل التحميل: youtube_fragment_forbidden 💡 يوتيوب يحجب خوادم الاستضافة (فحص روبوت). الحل المضمون: أضف كوكيز يوتيوب من متصفحك عبر متغير YOUTUBE_COOKIES_B64 في إعدادات الخادم، أو أرسل ملف كوكيز للبوت (Get cookies.txt) مرة و`
+- `best`: **FAIL** [youtube_fragment_forbidden] `فشل التحميل: youtube_fragment_forbidden 💡 يوتيوب يحجب خوادم الاستضافة (فحص روبوت). الحل المضمون: أضف كوكيز يوتيوب من متصفحك عبر متغير YOUTUBE_COOKIES_B64 في إعدادات الخادم، أو أرسل ملف كوكيز للبوت (Get cookies.txt) مرة واحدة.`
+- `1080`: **FAIL** [youtube_fragment_forbidden] `فشل التحميل: youtube_fragment_forbidden 💡 يوتيوب يحجب خوادم الاستضافة (فحص روبوت). الحل المضمون: أضف كوكيز يوتيوب من متصفحك عبر متغير YOUTUBE_COOKIES_B64 في إعدادات الخادم، أو أرسل ملف كوكيز للبوت (Get cookies.txt) مرة واحدة.`
+- `720`: **FAIL** [youtube_fragment_forbidden] `فشل التحميل: youtube_fragment_forbidden 💡 يوتيوب يحجب خوادم الاستضافة (فحص روبوت). الحل المضمون: أضف كوكيز يوتيوب من متصفحك عبر متغير YOUTUBE_COOKIES_B64 في إعدادات الخادم، أو أرسل ملف كوكيز للبوت (Get cookies.txt) مرة واحدة.`
+- `480`: **FAIL** [youtube_fragment_forbidden] `فشل التحميل: youtube_fragment_forbidden 💡 يوتيوب يحجب خوادم الاستضافة (فحص روبوت). الحل المضمون: أضف كوكيز يوتيوب من متصفحك عبر متغير YOUTUBE_COOKIES_B64 في إعدادات الخادم، أو أرسل ملف كوكيز للبوت (Get cookies.txt) مرة واحدة.`
+- `audio`: **FAIL** [youtube_fragment_forbidden] `فشل التحميل: youtube_fragment_forbidden 💡 يوتيوب يحجب خوادم الاستضافة (فحص روبوت). الحل المضمون: أضف كوكيز يوتيوب من متصفحك عبر متغير YOUTUBE_COOKIES_B64 في إعدادات الخادم، أو أرسل ملف كوكيز للبوت (Get cookies.txt) مرة واحدة.`
 

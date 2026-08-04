@@ -1,17 +1,60 @@
 {
   "base_url": "https://yjvideodownloads.onrender.com",
-  "started_at": 1785812041,
+  "started_at": 1785812477,
   "download_mode": true,
   "results": [
     {
       "url": "https://vm.tiktok.com/ZGdxjnte8/",
       "platform": "tiktok",
       "inspect": {
-        "ok": false,
-        "error": "HTTP 502: invalid JSON response",
-        "classification": "unclassified"
+        "ok": true,
+        "title": "TikTok video #7669414631714229511",
+        "duration": 167,
+        "formats": [
+          {
+            "id": "best",
+            "label": "⭐ الأفضل",
+            "size": null
+          },
+          {
+            "id": "1024",
+            "label": "1024p",
+            "size": 5021299
+          }
+        ]
       },
-      "qualities": []
+      "qualities": [
+        {
+          "requested_quality": "best",
+          "ok": true,
+          "bytes": 5021299,
+          "elapsed_seconds": 7.878,
+          "has_video": true,
+          "has_audio": true,
+          "height": 1024,
+          "duration": 167.066667
+        },
+        {
+          "requested_quality": "1024",
+          "ok": true,
+          "bytes": 5021299,
+          "elapsed_seconds": 4.892,
+          "has_video": true,
+          "has_audio": true,
+          "height": 1024,
+          "duration": 167.066667
+        },
+        {
+          "requested_quality": "audio",
+          "ok": true,
+          "bytes": 684001,
+          "elapsed_seconds": 8.8,
+          "has_video": false,
+          "has_audio": true,
+          "height": 0,
+          "duration": 167.019002
+        }
+      ]
     },
     {
       "url": "https://www.instagram.com/reel/DbkuNu8oMA5/?igsh=MWVuMjJlOWszdHQzMw==",
@@ -43,7 +86,7 @@
           "requested_quality": "best",
           "ok": true,
           "bytes": 8266977,
-          "elapsed_seconds": 7.941,
+          "elapsed_seconds": 6.784,
           "has_video": true,
           "has_audio": true,
           "height": 1914,
@@ -53,7 +96,7 @@
           "requested_quality": "960",
           "ok": true,
           "bytes": 2872047,
-          "elapsed_seconds": 6.79,
+          "elapsed_seconds": 7.05,
           "has_video": true,
           "has_audio": true,
           "height": 960,
@@ -63,7 +106,7 @@
           "requested_quality": "640",
           "ok": true,
           "bytes": 1106900,
-          "elapsed_seconds": 6.662,
+          "elapsed_seconds": 7.018,
           "has_video": true,
           "has_audio": true,
           "height": 640,
@@ -73,7 +116,7 @@
           "requested_quality": "audio",
           "ok": true,
           "bytes": 250720,
-          "elapsed_seconds": 6.668,
+          "elapsed_seconds": 4.563,
           "has_video": false,
           "has_audio": true,
           "height": 0,
@@ -86,7 +129,7 @@
       "platform": "youtube",
       "inspect": {
         "ok": false,
-        "error": "HTTP 502: invalid JSON response",
+        "error": "تعذر قراءة الفيديو: لم يُعثر على أي فيديو في هذا الرابط. yt-dlp: متخطى",
         "classification": "unclassified"
       },
       "qualities": []
@@ -127,39 +170,39 @@
           "ok": false,
           "error": "فشل التحميل: youtube_fragment_forbidden 💡 يوتيوب يحجب خوادم الاستضافة (فحص روبوت). الحل المضمون: أضف كوكيز يوتيوب من متصفحك عبر متغير YOUTUBE_COOKIES_B64 في إعدادات الخادم، أو أرسل ملف كوكيز للبوت (Get cookies.txt) مرة واحدة.",
           "classification": "youtube_fragment_forbidden",
-          "elapsed_seconds": 5.895
+          "elapsed_seconds": 55.277
         },
         {
           "requested_quality": "1080",
           "ok": false,
           "error": "فشل التحميل: youtube_fragment_forbidden 💡 يوتيوب يحجب خوادم الاستضافة (فحص روبوت). الحل المضمون: أضف كوكيز يوتيوب من متصفحك عبر متغير YOUTUBE_COOKIES_B64 في إعدادات الخادم، أو أرسل ملف كوكيز للبوت (Get cookies.txt) مرة واحدة.",
           "classification": "youtube_fragment_forbidden",
-          "elapsed_seconds": 5.981
+          "elapsed_seconds": 53.496
         },
         {
           "requested_quality": "720",
           "ok": false,
           "error": "فشل التحميل: youtube_fragment_forbidden 💡 يوتيوب يحجب خوادم الاستضافة (فحص روبوت). الحل المضمون: أضف كوكيز يوتيوب من متصفحك عبر متغير YOUTUBE_COOKIES_B64 في إعدادات الخادم، أو أرسل ملف كوكيز للبوت (Get cookies.txt) مرة واحدة.",
           "classification": "youtube_fragment_forbidden",
-          "elapsed_seconds": 6.598
+          "elapsed_seconds": 53.05
         },
         {
           "requested_quality": "480",
           "ok": false,
           "error": "فشل التحميل: youtube_fragment_forbidden 💡 يوتيوب يحجب خوادم الاستضافة (فحص روبوت). الحل المضمون: أضف كوكيز يوتيوب من متصفحك عبر متغير YOUTUBE_COOKIES_B64 في إعدادات الخادم، أو أرسل ملف كوكيز للبوت (Get cookies.txt) مرة واحدة.",
           "classification": "youtube_fragment_forbidden",
-          "elapsed_seconds": 5.998
+          "elapsed_seconds": 52.738
         },
         {
           "requested_quality": "audio",
           "ok": false,
           "error": "فشل التحميل: youtube_fragment_forbidden 💡 يوتيوب يحجب خوادم الاستضافة (فحص روبوت). الحل المضمون: أضف كوكيز يوتيوب من متصفحك عبر متغير YOUTUBE_COOKIES_B64 في إعدادات الخادم، أو أرسل ملف كوكيز للبوت (Get cookies.txt) مرة واحدة.",
           "classification": "youtube_fragment_forbidden",
-          "elapsed_seconds": 5.791
+          "elapsed_seconds": 54.511
         }
       ]
     }
   ],
-  "finished_at": 1785812124,
+  "finished_at": 1785812906,
   "ok": false
 }

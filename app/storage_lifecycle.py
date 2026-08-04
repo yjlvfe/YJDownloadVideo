@@ -52,6 +52,7 @@ def cleanup_expired_storage(
     now: float,
     ttl_seconds: int,
     active_paths: Iterable[str | Path],
+    temporary_grace_seconds: int = 3 * 60 * 60,
 ) -> CleanupResult:
     root_path = Path(root)
     root_path.mkdir(parents=True, exist_ok=True)
@@ -63,6 +64,7 @@ def cleanup_expired_storage(
     removed_count = 0
     removed_bytes = 0
     ttl = max(0, int(ttl_seconds))
+    temporary_grace = max(ttl, int(temporary_grace_seconds))
 
     for entry in root_path.iterdir():
         if entry.resolve(strict=False) in active:
@@ -77,7 +79,9 @@ def cleanup_expired_storage(
             age = float(now) - entry.stat().st_mtime
         except OSError:
             continue
-        if age < ttl:
+
+        required_age = temporary_grace if entry.name.startswith("yjdownload-") else ttl
+        if age < required_age:
             continue
 
         removed_bytes += _entry_bytes(entry)

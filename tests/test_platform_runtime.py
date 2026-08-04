@@ -31,7 +31,7 @@ def test_cookie_file_for_url_materializes_domain_secret(tmp_path: Path, monkeypa
     assert config.cookie_file_for_url("https://www.instagram.com/reel/test") is None
 
 
-def test_ytdlp_options_use_absolute_ffmpeg_and_proven_youtube_client(monkeypatch, tmp_path: Path):
+def test_ytdlp_options_use_absolute_ffmpeg_and_po_token_client(monkeypatch, tmp_path: Path):
     binaries = {"ffmpeg": "/usr/bin/ffmpeg", "node": "/usr/bin/node"}
     monkeypatch.setattr("shutil.which", lambda name: binaries.get(name))
     monkeypatch.setattr(config.settings, "ffmpeg_bin", "ffmpeg")
@@ -42,6 +42,10 @@ def test_ytdlp_options_use_absolute_ffmpeg_and_proven_youtube_client(monkeypatch
 
     assert opts["ffmpeg_location"] == "/usr/bin/ffmpeg"
     assert opts["js_runtimes"] == {"node": {}}
-    clients = opts.get("extractor_args", {}).get("youtube", {}).get("player_client", [])
-    assert clients == ["android"]
+    youtube_args = opts.get("extractor_args", {}).get("youtube", {})
+    assert youtube_args.get("player_client") == ["mweb"]
+    assert youtube_args.get("fetch_pot") == ["always"]
+    assert opts.get("extractor_args", {}).get("youtubepot-bgutilhttp", {}).get("base_url") == [
+        "http://127.0.0.1:4416"
+    ]
     assert "impersonate" not in opts

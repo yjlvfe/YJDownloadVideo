@@ -15,6 +15,7 @@ from .config import settings
 from .db import Job, SessionLocal
 from .durable_runtime import get_job_queue
 from .main import app as fastapi_app
+from . import live_acceptance_probe as _live_acceptance_probe  # noqa: F401,E402
 from .media_choice import safe_media_title
 from .rate_limit import SlidingWindowLimiter
 from .redaction import sanitize_external_error

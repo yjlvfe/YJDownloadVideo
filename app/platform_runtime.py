@@ -44,8 +44,11 @@ def _is_googlevideo_url(url: str) -> bool:
 
 def _trusted_googlevideo_candidate(candidate: Any) -> bool:
     source = str(getattr(candidate, "source", "") or "").lower()
-    cookies_file = str(getattr(candidate, "cookies_file", "") or "").strip()
-    return source in {"cdp", "cdp-dom"} and bool(cookies_file)
+    # A CDP URL was observed live by Chromium on the same Render instance and
+    # egress identity. The signed URL itself can be sufficient even when the
+    # public embed creates no persistent cookie file. HTML/JS scraped URLs
+    # remain blocked because they were not observed in the active session.
+    return source in {"cdp", "cdp-dom"}
 
 
 def _safe_ytdlp_logger() -> SafeYtdlpLogger:

@@ -2,7 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import app.extractor as extractor_module
-from app.extractor import DownloadError, MediaCandidate, UniversalExtractor, _browser_capture_url
+from app.extractor import DownloadError, MediaCandidate, UniversalExtractor, _browser_capture_url, _hint_height
 from app.platform_runtime import _trusted_googlevideo_candidate
 from scripts.acceptance_media import absolute_download_url
 
@@ -31,13 +31,12 @@ def test_youtube_browser_capture_uses_autoplay_embed():
     )
 
 
-def test_googlevideo_requires_same_browser_session_cookie():
-    trusted = SimpleNamespace(
-        source="cdp",
-        cookies_file="/tmp/browser-cookies.txt",
-    )
+def test_googlevideo_requires_live_browser_capture_not_cookie_file():
+    trusted = SimpleNamespace(source="cdp", cookies_file="")
+    trusted_dom = SimpleNamespace(source="cdp-dom", cookies_file="")
     untrusted = SimpleNamespace(source="js-blob", cookies_file="")
     assert _trusted_googlevideo_candidate(trusted) is True
+    assert _trusted_googlevideo_candidate(trusted_dom) is True
     assert _trusted_googlevideo_candidate(untrusted) is False
 
 
@@ -122,3 +121,36 @@ def test_youtube_discover_prefers_browser_session_candidates(monkeypatch):
     assert result["source"] == "browser+html"
     assert result["candidates"][0] is browser_candidate
     assert result["candidates"][1] is html_candidate
+
+
+def test_itag_height_mapping_is_used_for_browser_candidates():
+    assert _hint_height("https://r.example.googlevideo.com/videoplayback?itag=22") == 720
+    assert _hint_height("https://r.example.googlevideo.com/videoplayback?itag=137") == 1080
+
+
+def test_direct_stream_is_consumed_before_context_closes(monkeypatch, tmp_path):
+    class Response:
+        headers = {"content-type": "video/mp4", "content-length": "16"}
+        closed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.closed = True
+
+        def raise_for_status(self):
+            return None
+
+        def iter_bytes(self, size):
+            assert self.closed is False
+            yield b"\x00\x00\x00\x18ftypisom0000"
+
+    response = Response()
+    monkeypatch.setattr(extractor_module.httpx, "stream", lambda *args, **kwargs: response)
+    candidate = MediaCandidate(
+        "https://cdn.example/video.mp4", "direct", "cdp", title="video"
+    )
+    extractor = UniversalExtractor(use_browser=False)
+    result = extractor._download_candidate(candidate, tmp_path, "https://youtube.com/watch?v=x")
+    assert Path(result["path"]).read_bytes().startswith(b"\x00\x00\x00\x18ftyp")

@@ -90,6 +90,13 @@ PLAYER_KEY_PATTERNS = [
 
 # أرقام itag المدمجة في يوتيوب (فيديو + صوت معًا) — تُفضَّل على التكييفية المنفصلة
 COMBINED_ITAGS = {18, 22, 37, 59}
+YOUTUBE_ITAG_HEIGHTS = {
+    18: 360, 22: 720, 37: 1080, 59: 480,
+    160: 144, 133: 240, 134: 360, 135: 480, 136: 720, 137: 1080,
+    278: 144, 242: 240, 243: 360, 244: 480, 247: 720, 248: 1080,
+    394: 144, 395: 240, 396: 360, 397: 480, 398: 720, 399: 1080,
+    400: 1440, 401: 2160, 302: 720, 303: 1080, 308: 1440, 315: 2160,
+}
 
 
 def _unescape_js(s: str) -> str:
@@ -279,6 +286,8 @@ class UniversalExtractor:
             for cand in cands[:4]:
                 try:
                     res = self._download_candidate(cand, outdir, referer=url)
+                    if preferred == "audio":
+                        res = self._convert_to_audio_only(res, outdir)
                     if best_res is None:
                         best_res = res
                     ok_audio = _has_audio(res["path"])
@@ -336,10 +345,27 @@ class UniversalExtractor:
                     "formats": formats[-20:] or presets}
         except Exception:  # noqa: BLE001
             pass
+        if self._is_youtube(url):
+            try:
+                return self._inspect_yt_fallback(url)
+            except DownloadError:
+                pass
         d = self.discover(url, skip_ytdlp=True)
+        heights = sorted({
+            int(candidate.height)
+            for candidate in (d.get("candidates") or [])
+            if int(getattr(candidate, "height", 0) or 0) > 0
+        }, reverse=True)
+        actual_formats = [{"id": "best", "label": "الأفضل تلقائيًا", "size": None}]
+        actual_formats.extend(
+            {"id": str(height), "label": f"{height}p", "size": None}
+            for height in heights
+        )
         return {"source": d.get("source"), "title": d.get("title"),
                 "thumbnail": d.get("thumbnail"), "duration": d.get("duration"),
-                "formats": presets}
+                "formats": actual_formats if heights else [{
+                    "id": "best", "label": "الأفضل تلقائيًا", "size": None
+                }]}
 
     # ------------------------------------------------------------------
     # L1 — yt-dlp
@@ -435,6 +461,51 @@ class UniversalExtractor:
     def _is_youtube(url: str) -> bool:
         u = url.lower()
         return "youtube.com" in u or "youtu.be" in u
+
+    def _inspect_yt_fallback(self, url: str) -> dict:
+        """Read real formats through configured public YouTube frontends."""
+        from .config import settings
+        from yt_dlp import YoutubeDL
+
+        if not settings.enable_public_youtube_fallback:
+            raise DownloadError("public youtube fallback disabled")
+        match = re.search(r"(?:v=|shorts/|youtu\.be/|embed/|live/)([A-Za-z0-9_-]{11})", url)
+        if not match:
+            raise DownloadError("لا يمكن تحديد معرّف يوتيوب")
+        video_id = match.group(1)
+        last_error = "no public frontend available"
+        for host in ("yewtu.be", "invidious.nerdvpn.de", "piped.video"):
+            alternative = f"https://{host}/watch?v={video_id}"
+            try:
+                options = self._base_ytdlp_opts(Path(tempfile.gettempdir()), "best")
+                options["skip_download"] = True
+                options.pop("outtmpl", None)
+                options.pop("progress_hooks", None)
+                options.pop("postprocessors", None)
+                with YoutubeDL(options) as ydl:
+                    info = ydl.extract_info(alternative, download=False)
+                if not isinstance(info, dict):
+                    raise DownloadError("public frontend returned no metadata")
+                heights = sorted({
+                    int(fmt.get("height") or 0)
+                    for fmt in (info.get("formats") or [])
+                    if fmt.get("vcodec") != "none" and int(fmt.get("height") or 0) > 0
+                }, reverse=True)
+                formats = [{"id": "best", "label": "الأفضل تلقائيًا", "size": None}]
+                formats.extend(
+                    {"id": str(height), "label": f"{height}p", "size": None}
+                    for height in heights
+                )
+                return {
+                    "source": "youtube-public-frontend",
+                    "title": info.get("title") or video_id,
+                    "thumbnail": info.get("thumbnail") or "",
+                    "duration": info.get("duration"),
+                    "formats": formats,
+                }
+            except Exception as exc:  # noqa: BLE001
+                last_error = f"{host}: {str(exc)[:120]}"
+        raise DownloadError(f"public YouTube inspection failed: {last_error}")
 
     def _download_yt_fallback(self, url: str, outdir: Path, preferred: str) -> dict:
         """L4: يوتيوب محجوب من الخادم — يحمّل عبر خوادم Invidious/Piped العامة (بلا كوكيز)."""
@@ -855,10 +926,15 @@ class UniversalExtractor:
         for murl, m in media.items():
             if _is_ad_or_tracker(murl):
                 continue
+            itag_match = re.search(r"[?&]itag=(\d+)", murl)
+            itag = int(itag_match.group(1)) if itag_match else 0
+            height = int(m["height"] or YOUTUBE_ITAG_HEIGHTS.get(itag, 0))
+            combined_bonus = 200 if itag in COMBINED_ITAGS else 0
             cands.append(MediaCandidate(
                 url=murl, kind=_guess_kind(murl), source="cdp",
-                title=urlparse(url).netloc, height=m["height"],
-                size=m["size"], score=110 + m["size"] // (1024 * 1024),  # أكبر = أفضل
+                title=urlparse(url).netloc, height=height,
+                size=m["size"],
+                score=110 + combined_bonus + m["size"] // (1024 * 1024),
                 cookies_file=cookies_file))
         if dom_html:
             # مسح DOM الحيّ — يمسك المشغّلات التي تحقن src عبر JS
@@ -910,6 +986,28 @@ class UniversalExtractor:
     # ------------------------------------------------------------------
     # أدوات مساعدة
     # ------------------------------------------------------------------
+
+    def _convert_to_audio_only(self, result: dict, outdir: Path) -> dict:
+        source = Path(str(result.get("path") or ""))
+        if not source.is_file() or not _has_audio(source):
+            raise DownloadError("المصدر لا يحتوي على صوت")
+        if not _has_video(source):
+            return result
+        target = Path(outdir) / f"{source.stem}_audio.m4a"
+        command = [
+            ffmpeg_location(), "-y", "-i", str(source), "-vn",
+            "-c:a", "aac", "-b:a", "192k", str(target),
+        ]
+        completed = subprocess.run(
+            command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True
+        )
+        if completed.returncode != 0 or not target.is_file():
+            raise DownloadError("تعذر استخراج الصوت من المقطع")
+        source.unlink(missing_ok=True)
+        updated = dict(result)
+        updated["path"] = str(target)
+        updated["ext"] = "m4a"
+        return updated
 
     def _pick_best(self, cands: list[MediaCandidate]) -> MediaCandidate:
         if not cands:
@@ -964,25 +1062,25 @@ class UniversalExtractor:
                               timeout=60) as r:
                 r.raise_for_status()
                 ctype = (r.headers.get("content-type") or "").lower()
-                if ctype and not (ctype.startswith("video/") or ctype in (
+                if ctype and not (ctype.startswith(("video/", "audio/")) or ctype in (
                         "application/octet-stream", "application/x-mpegurl",
                         "application/vnd.apple.mpegurl", "binary/octet-stream")):
-                    raise DownloadError(f"الرابط لم يُرجع فيديو (Content-Type: {ctype})")
+                    raise DownloadError(f"الرابط لم يُرجع وسائط (Content-Type: {ctype})")
                 total = int(r.headers.get("content-length") or 0)
                 if self.max_filesize and total > self.max_filesize:
                     raise DownloadError("حجم الفيديو يتجاوز الحد المسموح")
                 n = 0
-            with open(dest, "wb") as f:
-                for chunk in r.iter_bytes(65536):
-                    f.write(chunk)
-                    n += len(chunk)
-                    if self.progress_hook:
-                        try:
-                            self.progress_hook({"status": "downloading",
-                                                "downloaded_bytes": n,
-                                                "total_bytes": total or None})
-                        except Exception:  # noqa: BLE001
-                            pass
+                with open(dest, "wb") as f:
+                    for chunk in r.iter_bytes(65536):
+                        f.write(chunk)
+                        n += len(chunk)
+                        if self.progress_hook:
+                            try:
+                                self.progress_hook({"status": "downloading",
+                                                    "downloaded_bytes": n,
+                                                    "total_bytes": total or None})
+                            except Exception:  # noqa: BLE001
+                                pass
         except httpx.HTTPStatusError as http_err:
             # 🎯 403/410 على رابط مباشر (حجب IP/توقيع): سلّم الرابط لـ yt-dlp قبل الاستسلام —
             # يتعامل مع التوقيعات والهيدرات المطلوبة (مشكلة googlevideo)
@@ -1074,9 +1172,14 @@ def _is_media_request(url: str, mime: str) -> bool:
 
 
 def _hint_height(url: str) -> int:
-    m = re.search(r"[/_-](\d{3,4})[pP](?![0-9])", url)
-    if m:
-        return int(m.group(1))
+    itag_match = re.search(r"[?&]itag=(\d+)", url)
+    if itag_match:
+        mapped = YOUTUBE_ITAG_HEIGHTS.get(int(itag_match.group(1)), 0)
+        if mapped:
+            return mapped
+    match = re.search(r"[/_-](\d{3,4})[pP](?![0-9])", url)
+    if match:
+        return int(match.group(1))
     return 0
 
 

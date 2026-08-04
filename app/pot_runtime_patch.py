@@ -18,7 +18,9 @@ def _provider_extractor_args() -> dict[str, dict[str, list[str]]]:
     provider_url = os.getenv("BGUTIL_PROVIDER_URL", "http://127.0.0.1:4416").rstrip("/")
     visitor_data = os.getenv("YOUTUBE_VISITOR_DATA", "").strip()
     youtube_args: dict[str, list[str]] = {
-        "player_client": ["mweb"],
+        # Keep yt-dlp's maintained default client set first (currently
+        # android_vr + web_safari), then retain mweb + PO token as fallback.
+        "player_client": ["default", "mweb"],
         "fetch_pot": ["always"],
         "pot_trace": ["false"],
         "use_ad_playback_context": ["true"],

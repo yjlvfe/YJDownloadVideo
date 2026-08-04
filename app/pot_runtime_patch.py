@@ -10,6 +10,7 @@ from .extractor import DownloadError, UniversalExtractor, _ytdlp_headers
 
 _PATCHED = False
 _ORIGINAL_BASE_OPTIONS = UniversalExtractor._base_ytdlp_opts
+_ORIGINAL_DOWNLOAD = UniversalExtractor.download
 _ORIGINAL_RETRYABLE = durable_runtime.is_retryable_job_error
 
 
@@ -38,21 +39,27 @@ def _patched_base_options(
     outdir: Path | str,
     preferred: str = "best",
 ) -> dict[str, Any]:
-    options = _ORIGINAL_BASE_OPTIONS(self, outdir, preferred)
+    # Audio is handled after a verified best-video download in _patched_download.
+    effective = "best" if preferred == "audio" else preferred
+    options = _ORIGINAL_BASE_OPTIONS(self, outdir, effective)
     options["extractor_args"] = _provider_extractor_args()
     options["js_runtimes"] = {"node": {}}
-    if preferred == "audio":
-        # Some social platforms expose an audio-only URL that yt-dlp downloads
-        # with an unusable container. Download a valid combined/best stream,
-        # then let ffmpeg extract a universally playable MP3.
-        options["format"] = "bestvideo*+bestaudio/best"
-        options["merge_output_format"] = "mp4"
-        options["postprocessors"] = [{
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": "mp3",
-            "preferredquality": "192",
-        }]
     return options
+
+
+def _patched_download(
+    self: UniversalExtractor,
+    url: str,
+    outdir: Path,
+    preferred: str = "best",
+    title_hint: str = "",
+) -> dict[str, Any]:
+    if preferred != "audio":
+        return _ORIGINAL_DOWNLOAD(self, url, outdir, preferred, title_hint)
+    # Use the exact path already proven by the video button, then extract audio
+    # from that complete media file. This avoids broken platform audio-only URLs.
+    video_result = _ORIGINAL_DOWNLOAD(self, url, outdir, "best", title_hint)
+    return self._convert_to_audio_only(video_result, Path(outdir))
 
 
 def _patched_ytdlp_info(self: UniversalExtractor, url: str) -> dict[str, Any]:
@@ -97,6 +104,7 @@ def install() -> None:
     if _PATCHED:
         return
     UniversalExtractor._base_ytdlp_opts = _patched_base_options
+    UniversalExtractor.download = _patched_download
     UniversalExtractor._ytdlp_info = _patched_ytdlp_info
     durable_runtime.is_retryable_job_error = _patched_retryable
     _PATCHED = True

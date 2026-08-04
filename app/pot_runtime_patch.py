@@ -11,17 +11,22 @@ from .extractor import COMBINED_ITAGS, DownloadError, UniversalExtractor, _ytdlp
 
 
 _PATCHED = False
+_WPC_RUNTIME_PATCHED = False
 _ORIGINAL_BASE_OPTIONS = UniversalExtractor._base_ytdlp_opts
 _ORIGINAL_DOWNLOAD = UniversalExtractor.download
 _ORIGINAL_RETRYABLE = durable_runtime.is_retryable_job_error
+
+
+def _browser_path() -> str:
+    return os.getenv("BROWSER_BIN", "/usr/bin/chromium-browser").strip() or "/usr/bin/chromium-browser"
 
 
 def _provider_extractor_args() -> dict[str, dict[str, list[str]]]:
     provider_url = os.getenv("BGUTIL_PROVIDER_URL", "http://127.0.0.1:4416").rstrip("/")
     visitor_data = os.getenv("YOUTUBE_VISITOR_DATA", "").strip()
     youtube_args: dict[str, list[str]] = {
-        # Keep yt-dlp's maintained default client set first (currently
-        # android_vr + web_safari), then retain mweb + PO token as fallback.
+        # Keep yt-dlp's maintained default client set first, then retain mweb
+        # with per-video PO tokens as the primary anonymous web fallback.
         "player_client": ["default", "mweb"],
         "fetch_pot": ["always"],
         "pot_trace": ["false"],
@@ -35,7 +40,60 @@ def _provider_extractor_args() -> dict[str, dict[str, list[str]]]:
         "youtubepot-bgutilhttp": {
             "base_url": [provider_url],
         },
+        "youtubepot-wpc": {
+            "browser_path": [_browser_path()],
+        },
     }
+
+
+def _wpc_only_extractor_args() -> dict[str, dict[str, list[str]]]:
+    # Force the browser-backed provider for this bounded second attempt. The
+    # unreachable BgUtils endpoint makes its higher-priority provider unavailable
+    # without stopping the production provider used by concurrent requests.
+    return {
+        "youtube": {
+            "player_client": ["mweb"],
+            "fetch_pot": ["always"],
+            "pot_trace": ["false"],
+            "use_ad_playback_context": ["true"],
+        },
+        "youtubepot-bgutilhttp": {
+            "base_url": ["http://127.0.0.1:1"],
+        },
+        "youtubepot-wpc": {
+            "browser_path": [_browser_path()],
+        },
+    }
+
+
+def _install_wpc_runtime_patch() -> None:
+    global _WPC_RUNTIME_PATCHED
+    if _WPC_RUNTIME_PATCHED:
+        return
+    from yt_dlp_plugins.extractor.getpot_wpc import WPCPTP
+
+    original = WPCPTP.get_nodriver_config
+    if getattr(original, "_yjdownload_safe", False):
+        _WPC_RUNTIME_PATCHED = True
+        return
+
+    def container_config(self: Any, proxy: str | None = None):
+        config = original(self, proxy)
+        # WPC deliberately uses a headed browser. Render supplies Xvfb, while
+        # Chromium runs as root in this container and therefore needs sandbox
+        # disabled. Keep DevTools memory use bounded on the free instance.
+        config.sandbox = False
+        for argument in (
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--window-size=1280,720",
+        ):
+            config.add_argument(argument)
+        return config
+
+    container_config._yjdownload_safe = True  # type: ignore[attr-defined]
+    WPCPTP.get_nodriver_config = container_config
+    _WPC_RUNTIME_PATCHED = True
 
 
 def _patched_base_options(
@@ -89,6 +147,58 @@ def _live_cdp_candidates(discovery: dict[str, Any], preferred: str) -> list[Any]
     return sorted(candidates, key=rank, reverse=True)
 
 
+def _media_result(info: dict[str, Any], directory: Path, preferred: str) -> dict[str, Any]:
+    media_extensions = {".mp4", ".m4a", ".webm", ".mkv", ".mov", ".mp3"}
+    files = [
+        path
+        for path in directory.rglob("*")
+        if path.is_file() and path.suffix.lower() in media_extensions
+    ]
+    if not files:
+        raise DownloadError("youtube_wpc_failed: no media file was created")
+    path = max(files, key=lambda item: item.stat().st_mtime)
+    if not extractor_module._has_audio(path):
+        raise DownloadError("youtube_wpc_failed: output has no audio")
+    if preferred != "audio" and not extractor_module._has_video(path):
+        raise DownloadError("youtube_wpc_failed: output has no video")
+    return {
+        "path": str(path),
+        "title": info.get("title") or "",
+        "duration": info.get("duration"),
+        "thumbnail": info.get("thumbnail") or "",
+        "ext": path.suffix.lstrip("."),
+    }
+
+
+def _download_youtube_with_wpc(
+    self: UniversalExtractor,
+    url: str,
+    outdir: Path,
+    preferred: str,
+) -> dict[str, Any]:
+    from yt_dlp import YoutubeDL
+
+    effective = "best" if preferred == "audio" else preferred
+    attempt_dir = Path(outdir) / "wpc"
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+    options = _ORIGINAL_BASE_OPTIONS(self, attempt_dir, effective)
+    options["extractor_args"] = _wpc_only_extractor_args()
+    options["js_runtimes"] = {"node": {}}
+    options["outtmpl"] = str(attempt_dir / "%(title).120s.%(ext)s")
+    options["retries"] = 1
+    options["fragment_retries"] = 1
+    try:
+        with YoutubeDL(options) as ydl:
+            info = ydl.extract_info(url, download=True)
+        if not isinstance(info, dict):
+            raise DownloadError("youtube_wpc_failed: no metadata returned")
+        return _media_result(info, attempt_dir, effective)
+    except DownloadError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise DownloadError(f"youtube_wpc_failed: {str(exc)[:240]}") from exc
+
+
 def _download_youtube_with_live_browser_fallback(
     self: UniversalExtractor,
     url: str,
@@ -99,38 +209,45 @@ def _download_youtube_with_live_browser_fallback(
     try:
         result = self._download_ytdlp(url, outdir, effective)
     except DownloadError as primary_error:
-        # Never turn yt-dlp metadata URLs or HTML storyboards into a second
-        # download attempt. Only URLs observed live by Chromium's CDP are bound
-        # to the active browser session and are eligible here. `discover` may be
-        # supplied by a prior/live capture even when new browser capture is off.
-        discovery = self.discover(url, skip_ytdlp=True)
-        candidates = _live_cdp_candidates(discovery, effective)
-        if not candidates:
-            raise DownloadError(
-                f"youtube_browser_no_media: {str(primary_error)[:160]}"
-            ) from primary_error
-
-        last_error = str(primary_error)
-        for index, candidate in enumerate(candidates[:8]):
-            attempt_dir = Path(outdir) / f"cdp-{index}"
-            attempt_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            result = _download_youtube_with_wpc(self, url, outdir, effective)
+        except DownloadError as wpc_error:
+            # Never turn yt-dlp metadata URLs or HTML storyboards into a second
+            # download attempt. Only URLs observed live by Chromium's CDP are
+            # eligible after both PO-token providers fail.
             try:
-                candidate_result = self._download_candidate(candidate, attempt_dir, referer=url)
-                media_path = Path(candidate_result["path"])
-                if not extractor_module._has_audio(media_path):
-                    last_error = "cdp candidate has no audio"
-                    continue
-                if not extractor_module._has_video(media_path):
-                    last_error = "cdp candidate has no video"
-                    continue
-                result = candidate_result
-                break
-            except Exception as candidate_error:  # noqa: BLE001
-                last_error = str(candidate_error)[:200]
-        else:
-            raise DownloadError(
-                f"youtube_browser_fallback_failed: {last_error}"
-            ) from primary_error
+                discovery = self.discover(url, skip_ytdlp=True)
+            except DownloadError as browser_error:
+                raise DownloadError(
+                    f"youtube_browser_no_media: {str(wpc_error)[:160]} / {str(browser_error)[:120]}"
+                ) from primary_error
+            candidates = _live_cdp_candidates(discovery, effective)
+            if not candidates:
+                raise DownloadError(
+                    f"youtube_browser_no_media: {str(wpc_error)[:200]}"
+                ) from primary_error
+
+            last_error = str(wpc_error)
+            for index, candidate in enumerate(candidates[:8]):
+                attempt_dir = Path(outdir) / f"cdp-{index}"
+                attempt_dir.mkdir(parents=True, exist_ok=True)
+                try:
+                    candidate_result = self._download_candidate(candidate, attempt_dir, referer=url)
+                    media_path = Path(candidate_result["path"])
+                    if not extractor_module._has_audio(media_path):
+                        last_error = "cdp candidate has no audio"
+                        continue
+                    if not extractor_module._has_video(media_path):
+                        last_error = "cdp candidate has no video"
+                        continue
+                    result = candidate_result
+                    break
+                except Exception as candidate_error:  # noqa: BLE001
+                    last_error = str(candidate_error)[:200]
+            else:
+                raise DownloadError(
+                    f"youtube_browser_fallback_failed: {last_error}"
+                ) from primary_error
 
     if preferred == "audio":
         return self._convert_to_audio_only(result, Path(outdir))
@@ -190,6 +307,7 @@ def _patched_retryable(message: str) -> bool:
     terminal_markers = (
         "http error 403",
         "403 forbidden",
+        "youtube_wpc_failed",
         "youtube_browser_no_media",
         "youtube_browser_fallback_failed",
         "unable to obtain file audio codec",
@@ -204,6 +322,7 @@ def install() -> None:
     global _PATCHED
     if _PATCHED:
         return
+    _install_wpc_runtime_patch()
     UniversalExtractor._base_ytdlp_opts = _patched_base_options
     UniversalExtractor.download = _patched_download
     UniversalExtractor._ytdlp_info = _patched_ytdlp_info

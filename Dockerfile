@@ -10,7 +10,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apk add --no-cache \
       build-base ca-certificates cairo-dev chromium curl ffmpeg giflib-dev git \
       jpeg-dev nodejs npm pango-dev pixman-dev pkgconf python3 python3-dev \
-      py3-pip py3-virtualenv
+      py3-pip py3-virtualenv xvfb
 
 RUN git clone --depth 1 --branch 1.3.1 \
       https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git \
@@ -40,8 +40,9 @@ RUN mkdir -p /app/data /app/storage \
     && chmod 0755 /app/docker/start-render.sh \
     && ffmpeg -version >/dev/null \
     && node --version \
-    && python -c "import importlib.metadata as m; assert m.version('bgutil-ytdlp-pot-provider') == '1.3.1'" \
-    && python -c "import curl_cffi, yt_dlp, yt_dlp_ejs" \
+    && command -v Xvfb >/dev/null \
+    && python -c "import importlib.metadata as m; assert m.version('bgutil-ytdlp-pot-provider') == '1.3.1'; assert m.version('yt-dlp-getpot-wpc') == '1.0.0'" \
+    && python -c "import curl_cffi, nodriver, yt_dlp, yt_dlp_ejs" \
     && python -m compileall -q app scripts \
     && python -m pytest -q
 

@@ -12,6 +12,7 @@ POT_URL="http://127.0.0.1:${POT_PORT}"
 POT_HOME="${BGUTIL_PROVIDER_HOME:-/opt/bgutil-ytdlp-pot-provider/server}"
 POT_LOG="/tmp/bgutil-pot-provider.log"
 POT_CACHE="/tmp/bgutil-pot-cache"
+XVFB_LOG="/tmp/yjdownload-xvfb.log"
 WORK_DIR="${TELEGRAM_WORK_DIR:-/tmp/telegram-bot-api-data}"
 TEMP_DIR="${TELEGRAM_TEMP_DIR:-/tmp/telegram-bot-api-temp}"
 TBA_LOG="/tmp/telegram-bot-api.log"
@@ -45,6 +46,10 @@ show_pot_diagnostics() {
   if [ -s "$POT_LOG" ]; then
     tail -n 120 "$POT_LOG" >&2
   fi
+  if [ -s "$XVFB_LOG" ]; then
+    echo "Xvfb output:" >&2
+    tail -n 80 "$XVFB_LOG" >&2
+  fi
   echo "--- End diagnostics ---" >&2
 }
 
@@ -57,6 +62,7 @@ rm -rf \
   "$TBA_LOG" \
   "$TBA_CHECK" \
   "$POT_LOG" \
+  "$XVFB_LOG" \
   2>/dev/null || true
 mkdir -p /app/storage /app/data "$POT_CACHE" "$WORK_DIR" "$TEMP_DIR"
 export XDG_CACHE_HOME="$POT_CACHE"
@@ -122,6 +128,30 @@ if [ "$pot_ready" != "true" ]; then
   exit 1
 fi
 
+export DISPLAY="${DISPLAY:-:99}"
+Xvfb "$DISPLAY" -screen 0 1280x720x24 -nolisten tcp >"$XVFB_LOG" 2>&1 &
+XVFB_PID=$!
+xvfb_ready=false
+for _ in $(seq 1 30); do
+  if ! kill -0 "$XVFB_PID" >/dev/null 2>&1; then
+    echo "Xvfb exited during startup" >&2
+    show_pot_diagnostics
+    exit 1
+  fi
+  display_number=${DISPLAY#:}
+  display_number=${display_number%%.*}
+  if [ -S "/tmp/.X11-unix/X${display_number}" ]; then
+    xvfb_ready=true
+    break
+  fi
+  sleep 1
+done
+if [ "$xvfb_ready" != "true" ]; then
+  echo "Xvfb did not become ready" >&2
+  show_pot_diagnostics
+  exit 1
+fi
+
 telegram-bot-api \
   --api-id="${TELEGRAM_API_ID}" \
   --api-hash="${TELEGRAM_API_HASH}" \
@@ -142,6 +172,10 @@ cleanup() {
   if [ -n "${TBA_PID:-}" ]; then
     kill "$TBA_PID" >/dev/null 2>&1 || true
     wait "$TBA_PID" >/dev/null 2>&1 || true
+  fi
+  if [ -n "${XVFB_PID:-}" ]; then
+    kill "$XVFB_PID" >/dev/null 2>&1 || true
+    wait "$XVFB_PID" >/dev/null 2>&1 || true
   fi
   if [ -n "${POT_PID:-}" ]; then
     kill "$POT_PID" >/dev/null 2>&1 || true

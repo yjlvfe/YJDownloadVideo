@@ -4,6 +4,7 @@ import importlib.metadata
 from pathlib import Path
 
 from app import extractor as extractor_module
+from app import pot_runtime_patch as pot_patch_module
 from app.extractor import DownloadError, MediaCandidate, UniversalExtractor
 from app.pot_runtime_patch import _provider_extractor_args
 
@@ -46,6 +47,37 @@ def test_browser_po_token_provider_is_installed_and_uses_chromium(monkeypatch):
     assert args["youtubepot-wpc"]["browser_path"] == ["/usr/bin/chromium"]
 
 
+def test_youtube_uses_wpc_before_cdp_after_primary_provider_fails(monkeypatch, tmp_path: Path):
+    extractor = UniversalExtractor(use_browser=True)
+    output = tmp_path / "wpc.mp4"
+    output.write_bytes(b"media")
+
+    monkeypatch.setattr(
+        extractor,
+        "_download_ytdlp",
+        lambda *args, **kwargs: (_ for _ in ()).throw(DownloadError("youtube_fragment_forbidden")),
+    )
+    monkeypatch.setattr(
+        pot_patch_module,
+        "_download_youtube_with_wpc",
+        lambda *args, **kwargs: {
+            "path": str(output),
+            "title": "wpc",
+            "duration": 10,
+            "thumbnail": "",
+            "ext": "mp4",
+        },
+    )
+    monkeypatch.setattr(
+        extractor,
+        "discover",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("CDP should not run")),
+    )
+
+    result = extractor.download("https://youtu.be/kTRs4ycFp_o", tmp_path, "best")
+    assert result["path"] == str(output)
+
+
 def test_youtube_403_skips_ytdlp_discovery_and_uses_only_live_cdp_candidates(
     monkeypatch,
     tmp_path: Path,
@@ -58,6 +90,7 @@ def test_youtube_403_skips_ytdlp_discovery_and_uses_only_live_cdp_candidates(
 
     monkeypatch.setattr(extractor, "_download_ytdlp", blocked)
     monkeypatch.setattr(extractor, "_download_yt_fallback", blocked)
+    monkeypatch.setattr(pot_patch_module, "_download_youtube_with_wpc", blocked)
 
     storyboard = MediaCandidate(
         "https://i.ytimg.com/sb/kTRs4ycFp_o/storyboard3_L3/M$M.jpg",

@@ -1,0 +1,57 @@
+name: Summarize Existing Live Acceptance
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  summarize:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.ref == 'test/live-acceptance-20260804'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+      - name: Build sanitized diagnostics from existing JSON
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          source = Path('docs/test-evidence/live-acceptance.json')
+          target = Path('docs/test-evidence/live-acceptance-diagnostics.md')
+          lines = ['# Live acceptance diagnostics', '']
+          if not source.is_file():
+              lines.append('No acceptance JSON is available.')
+          else:
+              report = json.loads(source.read_text(encoding='utf-8'))
+              for item in report.get('results', []):
+                  lines.append(f"## {item.get('platform') or 'unknown'}")
+                  inspected = item.get('inspect') or {}
+                  if not inspected.get('ok'):
+                      error = str(inspected.get('error') or '').replace('\n', ' ')[:400]
+                      lines.append(f"- inspect: `{error}`")
+                  for quality in item.get('qualities', []):
+                      if quality.get('ok'):
+                          continue
+                      key = quality.get('requested_quality') or 'unknown'
+                      error = str(quality.get('error') or '').replace('\n', ' ')[:400]
+                      classification = quality.get('classification') or 'unclassified'
+                      lines.append(f"- `{key}` [{classification}]: `{error}`")
+                  lines.append('')
+          target.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          PY
+      - name: Commit diagnostics to test branch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/test-evidence/live-acceptance-diagnostics.md
+          if ! git diff --cached --quiet; then
+            git commit -m 'test: record sanitized acceptance diagnostics [skip ci]'
+            git push origin "HEAD:${{ github.head_ref }}"
+          fi

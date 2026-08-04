@@ -65,11 +65,13 @@ def _candidate_itag(url: str) -> int:
 
 
 def _live_cdp_candidates(discovery: dict[str, Any], preferred: str) -> list[Any]:
+    # Source identity is the trust boundary. CDP/CDP-DOM means Chromium saw the
+    # request live in its own session. HTML/JS candidates (including YouTube
+    # storyboards) remain excluded regardless of their host or file extension.
     candidates = [
         candidate
         for candidate in (discovery.get("candidates") or [])
         if str(getattr(candidate, "source", "") or "").lower() in {"cdp", "cdp-dom"}
-        and "googlevideo.com" in str(getattr(candidate, "url", "") or "").lower()
     ]
     target = int(preferred) if str(preferred).isdigit() else None
 
@@ -97,11 +99,10 @@ def _download_youtube_with_live_browser_fallback(
     try:
         result = self._download_ytdlp(url, outdir, effective)
     except DownloadError as primary_error:
-        if not self.use_browser:
-            raise
         # Never turn yt-dlp metadata URLs or HTML storyboards into a second
         # download attempt. Only URLs observed live by Chromium's CDP are bound
-        # to the active browser session and are eligible here.
+        # to the active browser session and are eligible here. `discover` may be
+        # supplied by a prior/live capture even when new browser capture is off.
         discovery = self.discover(url, skip_ytdlp=True)
         candidates = _live_cdp_candidates(discovery, effective)
         if not candidates:

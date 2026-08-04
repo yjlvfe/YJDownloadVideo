@@ -1,0 +1,63 @@
+{
+  "base_url": "https://yjvideodownloads.onrender.com",
+  "started_at": 1785813561,
+  "download_mode": true,
+  "results": [
+    {
+      "url": "https://youtu.be/kTRs4ycFp_o?si=1T_A4IsWT8fxnkce",
+      "platform": "youtube",
+      "inspect": {
+        "ok": false,
+        "error": "تعذر قراءة الفيديو: لم يُعثر على أي فيديو في هذا الرابط. yt-dlp: متخطى | html-scan: HTTP Error 429: ",
+        "classification": "youtube_rate_limited"
+      },
+      "qualities": []
+    },
+    {
+      "url": "https://youtube.com/shorts/T7DA7VTZ_Zs?si=1F9UnPcRym93-Tyu",
+      "platform": "youtube",
+      "inspect": {
+        "ok": true,
+        "title": "آللهم صل وسلم وبارك على نبينا محمد 🤍. - YouTube",
+        "duration": null,
+        "formats": [
+          {
+            "id": "best",
+            "label": "⭐ الأفضل",
+            "size": null
+          },
+          {
+            "id": "360",
+            "label": "360p",
+            "size": null
+          }
+        ]
+      },
+      "qualities": [
+        {
+          "requested_quality": "best",
+          "ok": false,
+          "error": "فشل التحميل: youtube_fragment_forbidden 💡 يوتيوب يحجب خوادم الاستضافة (فحص روبوت). الحل المضمون: أضف كوكيز يوتيوب من متصفحك عبر متغير YOUTUBE_COOKIES_B64 في إعدادات الخادم، أو أرسل ملف كوكيز للبوت (Get cookies.txt) مرة واحدة.",
+          "classification": "youtube_fragment_forbidden",
+          "elapsed_seconds": 67.817
+        },
+        {
+          "requested_quality": "360",
+          "ok": false,
+          "error": "فشل التحميل: youtube_fragment_forbidden 💡 يوتيوب يحجب خوادم الاستضافة (فحص روبوت). الحل المضمون: أضف كوكيز يوتيوب من متصفحك عبر متغير YOUTUBE_COOKIES_B64 في إعدادات الخادم، أو أرسل ملف كوكيز للبوت (Get cookies.txt) مرة واحدة.",
+          "classification": "youtube_fragment_forbidden",
+          "elapsed_seconds": 67.318
+        },
+        {
+          "requested_quality": "audio",
+          "ok": false,
+          "error": "فشل التحميل: youtube_fragment_forbidden 💡 يوتيوب يحجب خوادم الاستضافة (فحص روبوت). الحل المضمون: أضف كوكيز يوتيوب من متصفحك عبر متغير YOUTUBE_COOKIES_B64 في إعدادات الخادم، أو أرسل ملف كوكيز للبوت (Get cookies.txt) مرة واحدة.",
+          "classification": "youtube_fragment_forbidden",
+          "elapsed_seconds": 65.399
+        }
+      ]
+    }
+  ],
+  "finished_at": 1785813880,
+  "ok": false
+}

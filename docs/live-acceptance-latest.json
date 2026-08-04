@@ -1,0 +1,165 @@
+{
+  "base_url": "https://yjvideodownloads.onrender.com",
+  "started_at": 1785812041,
+  "download_mode": true,
+  "results": [
+    {
+      "url": "https://vm.tiktok.com/ZGdxjnte8/",
+      "platform": "tiktok",
+      "inspect": {
+        "ok": false,
+        "error": "HTTP 502: invalid JSON response",
+        "classification": "unclassified"
+      },
+      "qualities": []
+    },
+    {
+      "url": "https://www.instagram.com/reel/DbkuNu8oMA5/?igsh=MWVuMjJlOWszdHQzMw==",
+      "platform": "instagram",
+      "inspect": {
+        "ok": true,
+        "title": "Video by ashraf_gradi",
+        "duration": null,
+        "formats": [
+          {
+            "id": "best",
+            "label": "⭐ الأفضل",
+            "size": null
+          },
+          {
+            "id": "960",
+            "label": "960p",
+            "size": null
+          },
+          {
+            "id": "640",
+            "label": "640p",
+            "size": null
+          }
+        ]
+      },
+      "qualities": [
+        {
+          "requested_quality": "best",
+          "ok": true,
+          "bytes": 8266977,
+          "elapsed_seconds": 7.941,
+          "has_video": true,
+          "has_audio": true,
+          "height": 1914,
+          "duration": 32.833
+        },
+        {
+          "requested_quality": "960",
+          "ok": true,
+          "bytes": 2872047,
+          "elapsed_seconds": 6.79,
+          "has_video": true,
+          "has_audio": true,
+          "height": 960,
+          "duration": 32.833
+        },
+        {
+          "requested_quality": "640",
+          "ok": true,
+          "bytes": 1106900,
+          "elapsed_seconds": 6.662,
+          "has_video": true,
+          "has_audio": true,
+          "height": 640,
+          "duration": 32.833
+        },
+        {
+          "requested_quality": "audio",
+          "ok": true,
+          "bytes": 250720,
+          "elapsed_seconds": 6.668,
+          "has_video": false,
+          "has_audio": true,
+          "height": 0,
+          "duration": 32.833
+        }
+      ]
+    },
+    {
+      "url": "https://youtu.be/kTRs4ycFp_o?si=1T_A4IsWT8fxnkce",
+      "platform": "youtube",
+      "inspect": {
+        "ok": false,
+        "error": "HTTP 502: invalid JSON response",
+        "classification": "unclassified"
+      },
+      "qualities": []
+    },
+    {
+      "url": "https://youtube.com/shorts/T7DA7VTZ_Zs?si=1F9UnPcRym93-Tyu",
+      "platform": "youtube",
+      "inspect": {
+        "ok": true,
+        "title": "آللهم صل وسلم وبارك على نبينا محمد 🤍. - YouTube",
+        "duration": null,
+        "formats": [
+          {
+            "id": "best",
+            "label": "⭐ الأفضل",
+            "size": null
+          },
+          {
+            "id": "1080",
+            "label": "1080p",
+            "size": null
+          },
+          {
+            "id": "720",
+            "label": "720p",
+            "size": null
+          },
+          {
+            "id": "480",
+            "label": "480p",
+            "size": null
+          }
+        ]
+      },
+      "qualities": [
+        {
+          "requested_quality": "best",
+          "ok": false,
+          "error": "فشل التحميل: youtube_fragment_forbidden 💡 يوتيوب يحجب خوادم الاستضافة (فحص روبوت). الحل المضمون: أضف كوكيز يوتيوب من متصفحك عبر متغير YOUTUBE_COOKIES_B64 في إعدادات الخادم، أو أرسل ملف كوكيز للبوت (Get cookies.txt) مرة واحدة.",
+          "classification": "youtube_fragment_forbidden",
+          "elapsed_seconds": 5.895
+        },
+        {
+          "requested_quality": "1080",
+          "ok": false,
+          "error": "فشل التحميل: youtube_fragment_forbidden 💡 يوتيوب يحجب خوادم الاستضافة (فحص روبوت). الحل المضمون: أضف كوكيز يوتيوب من متصفحك عبر متغير YOUTUBE_COOKIES_B64 في إعدادات الخادم، أو أرسل ملف كوكيز للبوت (Get cookies.txt) مرة واحدة.",
+          "classification": "youtube_fragment_forbidden",
+          "elapsed_seconds": 5.981
+        },
+        {
+          "requested_quality": "720",
+          "ok": false,
+          "error": "فشل التحميل: youtube_fragment_forbidden 💡 يوتيوب يحجب خوادم الاستضافة (فحص روبوت). الحل المضمون: أضف كوكيز يوتيوب من متصفحك عبر متغير YOUTUBE_COOKIES_B64 في إعدادات الخادم، أو أرسل ملف كوكيز للبوت (Get cookies.txt) مرة واحدة.",
+          "classification": "youtube_fragment_forbidden",
+          "elapsed_seconds": 6.598
+        },
+        {
+          "requested_quality": "480",
+          "ok": false,
+          "error": "فشل التحميل: youtube_fragment_forbidden 💡 يوتيوب يحجب خوادم الاستضافة (فحص روبوت). الحل المضمون: أضف كوكيز يوتيوب من متصفحك عبر متغير YOUTUBE_COOKIES_B64 في إعدادات الخادم، أو أرسل ملف كوكيز للبوت (Get cookies.txt) مرة واحدة.",
+          "classification": "youtube_fragment_forbidden",
+          "elapsed_seconds": 5.998
+        },
+        {
+          "requested_quality": "audio",
+          "ok": false,
+          "error": "فشل التحميل: youtube_fragment_forbidden 💡 يوتيوب يحجب خوادم الاستضافة (فحص روبوت). الحل المضمون: أضف كوكيز يوتيوب من متصفحك عبر متغير YOUTUBE_COOKIES_B64 في إعدادات الخادم، أو أرسل ملف كوكيز للبوت (Get cookies.txt) مرة واحدة.",
+          "classification": "youtube_fragment_forbidden",
+          "elapsed_seconds": 5.791
+        }
+      ]
+    }
+  ],
+  "finished_at": 1785812124,
+  "ok": false
+}

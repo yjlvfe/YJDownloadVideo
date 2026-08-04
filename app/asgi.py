@@ -6,9 +6,31 @@ from typing import Any, Awaitable, Callable
 from .config import settings
 from .main import app as fastapi_app
 from .rate_limit import SlidingWindowLimiter
+from .redaction import sanitize_external_error
+from .telegram_flow import TelegramFlow
 
 
 ASGIApp = Callable[[dict[str, Any], Callable[..., Awaitable[dict[str, Any]]], Callable[..., Awaitable[None]]], Awaitable[None]]
+
+
+_original_safe_error = TelegramFlow._safe_error
+
+
+def _sanitized_safe_error(exc: Exception) -> str:
+    return sanitize_external_error(
+        _original_safe_error(exc),
+        secrets_to_hide=(
+            settings.telegram_bot_token,
+            settings.telegram_api_hash,
+            settings.worker_shared_secret,
+            settings.admin_api_token,
+            settings.youtube_proxy_url,
+        ),
+        limit=220,
+    )
+
+
+TelegramFlow._safe_error = staticmethod(_sanitized_safe_error)
 
 
 class RateLimitedASGI:

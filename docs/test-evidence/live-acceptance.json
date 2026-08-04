@@ -1,6 +1,6 @@
 {
   "base_url": "https://yjvideodownloads.onrender.com",
-  "started_at": 1785804424,
+  "started_at": 1785804953,
   "download_mode": true,
   "results": [
     {
@@ -29,21 +29,21 @@
           "ok": false,
           "error": "Request URL is missing an 'http://' or 'https://' protocol.",
           "classification": "unclassified",
-          "elapsed_seconds": 6.593
+          "elapsed_seconds": 6.398
         },
         {
           "requested_quality": "1024",
           "ok": false,
           "error": "Request URL is missing an 'http://' or 'https://' protocol.",
           "classification": "unclassified",
-          "elapsed_seconds": 10.802
+          "elapsed_seconds": 6.531
         },
         {
           "requested_quality": "audio",
           "ok": false,
           "error": "Request URL is missing an 'http://' or 'https://' protocol.",
           "classification": "unclassified",
-          "elapsed_seconds": 8.686
+          "elapsed_seconds": 16.56
         }
       ]
     },
@@ -78,28 +78,28 @@
           "ok": false,
           "error": "Request URL is missing an 'http://' or 'https://' protocol.",
           "classification": "unclassified",
-          "elapsed_seconds": 10.869
+          "elapsed_seconds": 8.503
         },
         {
           "requested_quality": "960",
           "ok": false,
           "error": "Request URL is missing an 'http://' or 'https://' protocol.",
           "classification": "unclassified",
-          "elapsed_seconds": 8.723
+          "elapsed_seconds": 11.133
         },
         {
           "requested_quality": "640",
           "ok": false,
           "error": "Request URL is missing an 'http://' or 'https://' protocol.",
           "classification": "unclassified",
-          "elapsed_seconds": 8.698
+          "elapsed_seconds": 8.77
         },
         {
           "requested_quality": "audio",
           "ok": false,
           "error": "Request URL is missing an 'http://' or 'https://' protocol.",
           "classification": "unclassified",
-          "elapsed_seconds": 8.587
+          "elapsed_seconds": 9.29
         }
       ]
     },
@@ -149,39 +149,39 @@
           "ok": false,
           "error": "youtube_circuit_open",
           "classification": "youtube_circuit_open",
-          "elapsed_seconds": 2.297
+          "elapsed_seconds": 2.214
         },
         {
           "requested_quality": "1080",
           "ok": false,
           "error": "youtube_circuit_open",
           "classification": "youtube_circuit_open",
-          "elapsed_seconds": 0.344
+          "elapsed_seconds": 2.155
         },
         {
           "requested_quality": "720",
           "ok": false,
           "error": "youtube_circuit_open",
           "classification": "youtube_circuit_open",
-          "elapsed_seconds": 2.278
+          "elapsed_seconds": 2.155
         },
         {
           "requested_quality": "480",
           "ok": false,
           "error": "youtube_circuit_open",
           "classification": "youtube_circuit_open",
-          "elapsed_seconds": 0.176
+          "elapsed_seconds": 2.137
         },
         {
           "requested_quality": "audio",
           "ok": false,
           "error": "youtube_circuit_open",
           "classification": "youtube_circuit_open",
-          "elapsed_seconds": 2.26
+          "elapsed_seconds": 2.142
         }
       ]
     }
   ],
-  "finished_at": 1785804595,
+  "finished_at": 1785805113,
   "ok": false
 }

@@ -10,6 +10,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
 
 from . import main as main_module
+from . import youtube_runtime_patch as _youtube_runtime_patch  # noqa: F401
 from .config import settings
 from .db import Job, SessionLocal
 from .durable_runtime import get_job_queue
@@ -80,8 +81,6 @@ def _verify_transition_worker_request(raw: bytes, request: Request, context: str
         ):
             return True
 
-    # Old Vercel deployments have only this v1 header. Keep it during this one
-    # rollout so Render and Vercel can deploy in either order without downtime.
     return verify_worker_signature(
         settings.telegram_bot_token,
         raw,
@@ -106,8 +105,6 @@ def media_response_metadata(path: str | Path, title: str) -> tuple[str, str]:
 
 
 def _install_download_route() -> None:
-    # Replace the compatibility route from app.main so responses always use the
-    # actual output extension and MIME type (MP4, M4A, MP3, WebM, etc.).
     fastapi_app.router.routes = [
         route
         for route in fastapi_app.router.routes

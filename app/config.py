@@ -1,5 +1,6 @@
 import base64
 import binascii
+import hashlib
 import os
 import shutil
 from pathlib import Path
@@ -71,8 +72,13 @@ class Settings(BaseSettings):
     )
 
     def model_post_init(self, __context) -> None:
-        if self.environment.strip().lower() in {"production", "prod"} and self.secret_key == "change-me":
-            raise ValueError("SECRET_KEY must be configured in production")
+        deployed = bool(VERCEL_RUNTIME or os.getenv("RENDER") or os.getenv("RENDER_SERVICE_ID"))
+        if self.secret_key == "change-me":
+            if self.telegram_bot_token:
+                material = f"yjdownload-signing-v1\0{self.telegram_bot_token}"
+                self.secret_key = hashlib.sha256(material.encode("utf-8")).hexdigest()
+            elif deployed or self.environment.strip().lower() in {"production", "prod"}:
+                raise ValueError("SECRET_KEY or TELEGRAM_BOT_TOKEN must be configured in production")
 
         if not VERCEL_RUNTIME:
             return

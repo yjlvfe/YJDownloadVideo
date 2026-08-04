@@ -7,6 +7,10 @@ set -eu
 
 PORT="${PORT:-10000}"
 LOCAL_API="http://127.0.0.1:8081"
+POT_PORT="${BGUTIL_PROVIDER_PORT:-4416}"
+POT_URL="http://127.0.0.1:${POT_PORT}"
+POT_HOME="${BGUTIL_PROVIDER_HOME:-/opt/bgutil-ytdlp-pot-provider/server}"
+POT_LOG="/tmp/bgutil-pot-provider.log"
 WORK_DIR="${TELEGRAM_WORK_DIR:-/tmp/telegram-bot-api-data}"
 TEMP_DIR="${TELEGRAM_TEMP_DIR:-/tmp/telegram-bot-api-temp}"
 TBA_LOG="/tmp/telegram-bot-api.log"
@@ -33,9 +37,16 @@ show_tba_diagnostics() {
   echo "--- End diagnostics ---" >&2
 }
 
-# Never wipe /app/storage at startup: durable queue leases may recover an active
-# job after a deploy. Only process-owned temporary and Telegram API directories
-# are reset here; media cleanup is TTL-aware inside the application.
+show_pot_diagnostics() {
+  echo "--- PO Token provider diagnostics ---" >&2
+  echo "home=${POT_HOME}" >&2
+  echo "url=${POT_URL}" >&2
+  if [ -s "$POT_LOG" ]; then
+    tail -n 120 "$POT_LOG" >&2
+  fi
+  echo "--- End diagnostics ---" >&2
+}
+
 rm -rf \
   /tmp/yjdownload-* \
   /tmp/yjpreview-* \
@@ -43,15 +54,36 @@ rm -rf \
   "$TEMP_DIR" \
   "$TBA_LOG" \
   "$TBA_CHECK" \
+  "$POT_LOG" \
   2>/dev/null || true
 mkdir -p /app/storage /app/data "$WORK_DIR" "$TEMP_DIR"
 
-# Logging out of Telegram's hosted Bot API is destructive and rate-limited.
-# Keep it as an explicit recovery switch rather than doing it on every deploy.
 if [ "${TELEGRAM_FORCE_LOGOUT_ON_START:-0}" = "1" ]; then
   curl -sS --max-time 30 -X POST \
     "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/logOut" \
     >/dev/null 2>&1 || true
+fi
+
+node "$POT_HOME/build/main.js" --port "$POT_PORT" >"$POT_LOG" 2>&1 &
+POT_PID=$!
+
+pot_ready=false
+for _ in $(seq 1 90); do
+  if ! kill -0 "$POT_PID" >/dev/null 2>&1; then
+    echo "PO Token provider exited during startup" >&2
+    show_pot_diagnostics
+    exit 1
+  fi
+  if curl -fsS --max-time 2 "$POT_URL/ping" >/dev/null 2>&1; then
+    pot_ready=true
+    break
+  fi
+  sleep 1
+done
+if [ "$pot_ready" != "true" ]; then
+  echo "PO Token provider did not become ready" >&2
+  show_pot_diagnostics
+  exit 1
 fi
 
 telegram-bot-api \
@@ -71,8 +103,14 @@ cleanup() {
     kill "$APP_PID" >/dev/null 2>&1 || true
     wait "$APP_PID" >/dev/null 2>&1 || true
   fi
-  kill "$TBA_PID" >/dev/null 2>&1 || true
-  wait "$TBA_PID" >/dev/null 2>&1 || true
+  if [ -n "${TBA_PID:-}" ]; then
+    kill "$TBA_PID" >/dev/null 2>&1 || true
+    wait "$TBA_PID" >/dev/null 2>&1 || true
+  fi
+  if [ -n "${POT_PID:-}" ]; then
+    kill "$POT_PID" >/dev/null 2>&1 || true
+    wait "$POT_PID" >/dev/null 2>&1 || true
+  fi
 }
 trap cleanup EXIT INT TERM
 
@@ -83,8 +121,6 @@ for _ in $(seq 1 120); do
     show_tba_diagnostics
     exit 1
   fi
-  # Any HTTP response proves the listener is alive. Never poll getMe here:
-  # authenticated readiness checks can rate-limit the entire bot during deploys.
   if curl -sS --max-time 2 -o /dev/null "${LOCAL_API}/" 2>"$TBA_CHECK"; then
     ready=true
     break
@@ -100,6 +136,7 @@ fi
 rm -f "$TBA_CHECK"
 
 export TELEGRAM_BOT_API_BASE="$LOCAL_API"
+export BGUTIL_PROVIDER_URL="$POT_URL"
 uvicorn app.asgi:app --host 0.0.0.0 --port "$PORT" &
 APP_PID=$!
 
@@ -112,6 +149,7 @@ for _ in $(seq 1 60); do
   if ! kill -0 "$APP_PID" >/dev/null 2>&1; then
     echo "Application exited during startup" >&2
     show_tba_diagnostics
+    show_pot_diagnostics
     exit 1
   fi
   sleep 1
@@ -121,8 +159,6 @@ if [ "$app_ready" != "true" ]; then
   exit 1
 fi
 
-# Telegram must keep calling the thin Vercel ingress; Vercel then forwards the
-# signed update to this Render worker. An environment value can override it.
 WEBHOOK_URL="${TELEGRAM_WEBHOOK_URL:-https://yj-download-video.vercel.app/webhook/telegram}"
 export TELEGRAM_WEBHOOK_URL="$WEBHOOK_URL"
 
@@ -134,8 +170,6 @@ print(hashlib.sha256(material.encode()).hexdigest(), end="")
 PY
 )
 
-# A temporary Telegram 429 must not take the whole worker offline. The status
-# endpoint can repair the webhook after the retry window expires.
 if ! curl -fsS --max-time 30 -X POST \
   "${LOCAL_API}/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
   --data-urlencode "url=${WEBHOOK_URL}" \

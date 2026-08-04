@@ -214,7 +214,20 @@ class UniversalExtractor:
         try:
             cands, meta = self._scan_html(url)
             if cands:
-                return {"source": "html-scan", "title": meta.get("title", ""),
+                source = "html-scan"
+                if self._is_youtube(url) and self.use_browser:
+                    try:
+                        browser_candidates = self._capture_browser(url)
+                    except Exception as browser_error:  # noqa: BLE001
+                        errors.append(f"browser: {str(browser_error)[:120]}")
+                        browser_candidates = []
+                    if browser_candidates:
+                        source = "browser+html"
+                        seen = {candidate.url for candidate in browser_candidates}
+                        cands = browser_candidates + [
+                            candidate for candidate in cands if candidate.url not in seen
+                        ]
+                return {"source": source, "title": meta.get("title", ""),
                         "thumbnail": meta.get("thumbnail", ""), "duration": None,
                         "candidates": cands}
         except Exception as e:  # noqa: BLE001

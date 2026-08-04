@@ -87,3 +87,38 @@ def test_youtube_download_continues_to_browser_after_ytdlp_block(monkeypatch, tm
         "best",
     )
     assert result["path"] == str(media_path)
+
+
+def test_youtube_discover_prefers_browser_session_candidates(monkeypatch):
+    extractor = UniversalExtractor(use_browser=True)
+    html_candidate = MediaCandidate(
+        "https://r.example.googlevideo.com/videoplayback?itag=18",
+        "direct",
+        "js-blob",
+    )
+    browser_candidate = MediaCandidate(
+        "https://r.example.googlevideo.com/videoplayback?itag=22",
+        "direct",
+        "cdp",
+        cookies_file="/tmp/browser-cookies.txt",
+    )
+    monkeypatch.setattr(
+        extractor,
+        "_ytdlp_info",
+        lambda *args, **kwargs: (_ for _ in ()).throw(DownloadError("blocked")),
+    )
+    monkeypatch.setattr(
+        extractor,
+        "_scan_html",
+        lambda *args, **kwargs: ([html_candidate], {"title": "video", "thumbnail": ""}),
+    )
+    monkeypatch.setattr(
+        extractor,
+        "_capture_browser",
+        lambda *args, **kwargs: [browser_candidate],
+    )
+
+    result = extractor.discover("https://youtube.com/watch?v=kTRs4ycFp_o")
+    assert result["source"] == "browser+html"
+    assert result["candidates"][0] is browser_candidate
+    assert result["candidates"][1] is html_candidate

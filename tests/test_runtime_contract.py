@@ -51,9 +51,26 @@ def test_runtime_derives_sha_from_render_or_vercel(monkeypatch: pytest.MonkeyPat
     assert Settings(_env_file=None).git_sha == "vercel-sha"
 
 
+def test_deployed_runtime_derives_non_default_secret_from_preserved_bot_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.setenv("SECRET_KEY", "change-me")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token-that-is-not-a-real-telegram-token")
+
+    first = Settings(_env_file=None)
+    second = Settings(_env_file=None)
+
+    assert first.secret_key != "change-me"
+    assert first.secret_key == second.secret_key
+    assert first.telegram_bot_token not in first.secret_key
+    assert first.telegram_bot_token not in repr(first)
+
+
 def test_production_rejects_the_default_signing_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("SECRET_KEY", "change-me")
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
 
     with pytest.raises(ValueError, match="SECRET_KEY"):
         Settings(_env_file=None)

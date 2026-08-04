@@ -16,10 +16,17 @@ RUN git clone --depth 1 --branch 1.3.1 \
       https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git \
       /opt/bgutil-ytdlp-pot-provider \
     && cd "$BGUTIL_PROVIDER_HOME" \
+    && sed -i \
+         -e 's/host: "::"/host: "127.0.0.1"/g' \
+         -e 's/host: "0.0.0.0"/host: "127.0.0.1"/g' \
+         -e 's/new SessionManager();/new SessionManager(false);/' \
+         src/main.ts \
     && npm ci --no-audit --no-fund \
     && npx tsc \
     && npm prune --omit=dev --no-audit --no-fund \
     && test -f build/main.js \
+    && grep -q '127.0.0.1' build/main.js \
+    && grep -q 'new SessionManager(false)' build/main.js \
     && rm -rf /root/.npm /opt/bgutil-ytdlp-pot-provider/.git
 
 WORKDIR /app

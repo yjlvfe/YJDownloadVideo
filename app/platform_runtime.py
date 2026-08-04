@@ -11,6 +11,7 @@ from .config import (
     settings,
 )
 from .media_choice import is_quality_key, selector_for_quality
+from .redaction import SafeYtdlpLogger
 from .youtube_policy import (
     FRAGMENT_FORBIDDEN,
     YouTubeCircuit,
@@ -41,6 +42,18 @@ def _is_googlevideo_url(url: str) -> bool:
     return host == "googlevideo.com" or host.endswith(".googlevideo.com")
 
 
+def _safe_ytdlp_logger() -> SafeYtdlpLogger:
+    return SafeYtdlpLogger(
+        secrets_to_hide=(
+            settings.telegram_bot_token,
+            settings.telegram_api_hash,
+            settings.worker_shared_secret,
+            settings.admin_api_token,
+            settings.youtube_proxy_url,
+        )
+    )
+
+
 def _common_options(
     extractor: Any,
     *,
@@ -59,6 +72,7 @@ def _common_options(
         "concurrent_fragment_downloads": 1,
         "http_headers": _ytdlp_headers(),
         "source_address": "0.0.0.0",
+        "logger": _safe_ytdlp_logger(),
     }
     if skip_download:
         options["skip_download"] = True
@@ -110,6 +124,7 @@ def install_runtime_patches() -> None:
         options["concurrent_fragment_downloads"] = 1
         options["source_address"] = "0.0.0.0"
         options["no_warnings"] = False
+        options["logger"] = _safe_ytdlp_logger()
         options.update(javascript_runtime_options())
 
         active_url = str(getattr(self, "_runtime_url", "") or "")

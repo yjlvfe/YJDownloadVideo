@@ -43,7 +43,7 @@ def test_ytdlp_options_use_absolute_ffmpeg_and_po_token_client(monkeypatch, tmp_
     assert opts["ffmpeg_location"] == "/usr/bin/ffmpeg"
     assert opts["js_runtimes"] == {"node": {}}
     youtube_args = opts.get("extractor_args", {}).get("youtube", {})
-    assert youtube_args.get("player_client") == ["mweb"]
+    assert youtube_args.get("player_client") == ["default", "mweb"]
     assert youtube_args.get("fetch_pot") == ["always"]
     assert opts.get("extractor_args", {}).get("youtubepot-bgutilhttp", {}).get("base_url") == [
         "http://127.0.0.1:4416"

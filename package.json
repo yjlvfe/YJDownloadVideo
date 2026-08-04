@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "bgutils-js": "4.0.2",
+    "bgutils-js": "3.2.0",
     "jsdom": "29.1.1",
     "youtubei.js": "17.0.1"
   }

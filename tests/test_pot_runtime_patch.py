@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.extractor import UniversalExtractor
+from app import extractor as extractor_module
+from app.extractor import DownloadError, MediaCandidate, UniversalExtractor
 from app.pot_runtime_patch import _provider_extractor_args
 
 
@@ -35,3 +36,65 @@ def test_base_options_include_provider_and_node_runtime(monkeypatch, tmp_path: P
     assert youtube["player_skip"] == ["webpage", "configs"]
     assert options["js_runtimes"] == {"node": {}}
     assert "height<=720" in options["format"]
+
+
+def test_youtube_403_skips_ytdlp_discovery_and_uses_only_live_cdp_candidates(
+    monkeypatch,
+    tmp_path: Path,
+):
+    extractor = UniversalExtractor(use_browser=True)
+    youtube_url = "https://youtu.be/kTRs4ycFp_o"
+
+    def blocked(*args, **kwargs):
+        raise DownloadError("youtube_fragment_forbidden")
+
+    monkeypatch.setattr(extractor, "_download_ytdlp", blocked)
+    monkeypatch.setattr(extractor, "_download_yt_fallback", blocked)
+
+    storyboard = MediaCandidate(
+        "https://i.ytimg.com/sb/kTRs4ycFp_o/storyboard3_L3/M$M.jpg",
+        "direct",
+        "js-blob",
+    )
+    live_cdp = MediaCandidate(
+        "https://rr1---sn.example.googlevideo.com/videoplayback?itag=22",
+        "direct",
+        "cdp",
+        height=720,
+    )
+    discover_calls: list[bool] = []
+
+    def discover(url: str, skip_ytdlp: bool = False):
+        discover_calls.append(skip_ytdlp)
+        return {
+            "source": "browser+html",
+            "title": "sample",
+            "thumbnail": "",
+            "duration": 10,
+            "candidates": [storyboard, live_cdp],
+        }
+
+    monkeypatch.setattr(extractor, "discover", discover)
+    output = tmp_path / "sample.mp4"
+    output.write_bytes(b"media")
+    used_sources: list[str] = []
+
+    def download_candidate(candidate, outdir, referer):
+        used_sources.append(candidate.source)
+        return {
+            "path": str(output),
+            "title": "sample",
+            "duration": 10,
+            "thumbnail": "",
+            "ext": "mp4",
+        }
+
+    monkeypatch.setattr(extractor, "_download_candidate", download_candidate)
+    monkeypatch.setattr(extractor_module, "_has_audio", lambda path: True)
+    monkeypatch.setattr(extractor_module, "_has_video", lambda path: True)
+
+    result = extractor.download(youtube_url, tmp_path, "720")
+
+    assert result["path"] == str(output)
+    assert discover_calls == [True]
+    assert used_sources == ["cdp"]

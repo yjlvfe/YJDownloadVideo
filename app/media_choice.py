@@ -18,7 +18,11 @@ class QualityOption:
 
 
 def _bounded_video_selector(height: int) -> str:
+    # The advertised height is selected exactly first. The bounded alternatives
+    # are used only if the source changes between inspection and download.
     return (
+        f"bestvideo[height={height}]+bestaudio/"
+        f"best[height={height}]/"
         f"bestvideo[height<={height}]+bestaudio/"
         f"best[height<={height}]"
     )
@@ -54,7 +58,9 @@ _QUALITY_REGISTRY: tuple[QualityOption, ...] = (
 _QUALITY_BY_KEY = {item.key: item for item in _QUALITY_REGISTRY}
 _QUALITY_KEY_BY_SELECTOR = {item.selector: item.key for item in _QUALITY_REGISTRY}
 _DYNAMIC_SELECTOR_RE = re.compile(
-    r"^bestvideo\[height<=(\d{2,4})\]\+bestaudio/best\[height<=\1\]$"
+    r"^bestvideo\[height=(\d{2,4})\]\+bestaudio/"
+    r"best\[height=\1\]/bestvideo\[height<=\1\]\+bestaudio/"
+    r"best\[height<=\1\]$"
 )
 
 

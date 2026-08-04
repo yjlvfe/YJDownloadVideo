@@ -2,6 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import app.extractor as extractor_module
+import app.pot_runtime_patch as pot_patch
 from app.extractor import DownloadError, MediaCandidate, UniversalExtractor, _browser_capture_url, _hint_height
 from app.platform_runtime import _trusted_googlevideo_candidate
 from scripts.acceptance_media import absolute_download_url
@@ -55,6 +56,11 @@ def test_youtube_download_continues_to_browser_after_ytdlp_block(monkeypatch, tm
         extractor,
         "_download_ytdlp",
         lambda *args, **kwargs: (_ for _ in ()).throw(DownloadError("youtube_circuit_open")),
+    )
+    monkeypatch.setattr(
+        pot_patch,
+        "_download_youtube_with_wpc",
+        lambda *args, **kwargs: (_ for _ in ()).throw(DownloadError("wpc unavailable")),
     )
     monkeypatch.setattr(
         extractor,

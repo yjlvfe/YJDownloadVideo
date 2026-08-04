@@ -11,6 +11,7 @@ POT_PORT="${BGUTIL_PROVIDER_PORT:-4416}"
 POT_URL="http://127.0.0.1:${POT_PORT}"
 POT_HOME="${BGUTIL_PROVIDER_HOME:-/opt/bgutil-ytdlp-pot-provider/server}"
 POT_LOG="/tmp/bgutil-pot-provider.log"
+POT_CACHE="/tmp/bgutil-pot-cache"
 WORK_DIR="${TELEGRAM_WORK_DIR:-/tmp/telegram-bot-api-data}"
 TEMP_DIR="${TELEGRAM_TEMP_DIR:-/tmp/telegram-bot-api-temp}"
 TBA_LOG="/tmp/telegram-bot-api.log"
@@ -50,19 +51,54 @@ show_pot_diagnostics() {
 rm -rf \
   /tmp/yjdownload-* \
   /tmp/yjpreview-* \
+  "$POT_CACHE" \
   "$WORK_DIR" \
   "$TEMP_DIR" \
   "$TBA_LOG" \
   "$TBA_CHECK" \
   "$POT_LOG" \
   2>/dev/null || true
-mkdir -p /app/storage /app/data "$WORK_DIR" "$TEMP_DIR"
+mkdir -p /app/storage /app/data "$POT_CACHE" "$WORK_DIR" "$TEMP_DIR"
+export XDG_CACHE_HOME="$POT_CACHE"
 
 if [ "${TELEGRAM_FORCE_LOGOUT_ON_START:-0}" = "1" ]; then
   curl -sS --max-time 30 -X POST \
     "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/logOut" \
     >/dev/null 2>&1 || true
 fi
+
+visitor_ready=false
+for attempt in 1 2 3; do
+  SESSION_JSON=$(node "$POT_HOME/build/generate_once.js" --bypass-cache 2>>"$POT_LOG" || true)
+  YOUTUBE_VISITOR_DATA=$(printf '%s\n' "$SESSION_JSON" | python3 -c '
+import json
+import sys
+value = ""
+for raw in reversed(sys.stdin.read().splitlines()):
+    try:
+        payload = json.loads(raw.strip())
+    except Exception:
+        continue
+    if isinstance(payload, dict):
+        value = str(payload.get("contentBinding") or "").strip()
+        if value:
+            break
+print(value, end="")
+')
+  unset SESSION_JSON
+  if [ -n "$YOUTUBE_VISITOR_DATA" ]; then
+    visitor_ready=true
+    break
+  fi
+  echo "PO Token visitor binding generation attempt ${attempt} failed" >&2
+  sleep 2
+done
+if [ "$visitor_ready" != "true" ]; then
+  echo "PO Token visitor binding could not be generated" >&2
+  show_pot_diagnostics
+  exit 1
+fi
+export YOUTUBE_VISITOR_DATA
 
 node "$POT_HOME/build/main.js" --port "$POT_PORT" >"$POT_LOG" 2>&1 &
 POT_PID=$!

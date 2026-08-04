@@ -14,13 +14,21 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install and audit Node runtime
+        run: |
+          npm install --ignore-scripts
+          npm audit --omit=dev --audit-level=high
+          node scripts/youtube_innertube.mjs self-test
       - name: Install dependencies and audit tool
         run: pip install -r requirements.txt pip-audit
       - name: Audit Python dependencies

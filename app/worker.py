@@ -1,18 +1,19 @@
 from __future__ import annotations
 
+import multiprocessing as mp
 from datetime import timedelta
 from pathlib import Path
+from queue import Empty
+from typing import Any
 
 from .config import settings
 from .db import Job, SessionLocal, utcnow
-from .extractor import UniversalExtractor
 from .redaction import sanitize_external_error
 from .security import make_token
 from .status import write_status
 
 
 def _owner_cookies(owner_key: str) -> str | None:
-    """Return a per-user cookie file when one exists."""
     path = settings.cookies_path / f"{owner_key}.txt"
     return str(path) if path.is_file() else None
 
@@ -31,18 +32,20 @@ def _safe_failure(exc: BaseException) -> str:
     )
 
 
-def process_job(job_id: str) -> None:
+def _extract_in_child(job_id: str, result_queue: Any) -> None:
+    from .extractor import UniversalExtractor
+
     with SessionLocal() as database:
         job = database.get(Job, job_id)
-        if not job:
+        if job is None:
+            result_queue.put({"ok": False, "error": "web job disappeared"})
             return
-        job.status = "downloading"
-        database.commit()
         owner_key = job.owner_key or ""
+        url = str(job.url)
+        requested_format = str(job.requested_format or "best")
 
     outdir = settings.storage_path / job_id
     outdir.mkdir(exist_ok=True)
-    write_status(job_id, "downloading", 0)
 
     def hook(data: dict) -> None:
         if data.get("status") == "downloading":
@@ -68,15 +71,72 @@ def process_job(job_id: str) -> None:
         request_timeout=settings.request_timeout_seconds,
     )
     try:
-        result = extractor.download(
-            job.url,
-            outdir,
-            preferred=job.requested_format or "best",
-        )
+        result = extractor.download(url, outdir, preferred=requested_format)
         media_file = Path(result["path"])
         if not media_file.exists():
             raise ValueError("لم يتم إنشاء الملف")
-        write_status(job_id, "done", 100, size=media_file.stat().st_size)
+        result_queue.put(
+            {
+                "ok": True,
+                "result": result,
+                "file_path": str(media_file),
+                "file_size": media_file.stat().st_size,
+            }
+        )
+    except BaseException as exc:  # noqa: BLE001
+        result_queue.put({"ok": False, "error": _safe_failure(exc)})
+    finally:
+        extractor.cleanup()
+
+
+def _run_extraction_with_timeout(job_id: str) -> dict[str, Any]:
+    context = mp.get_context("fork")
+    result_queue = context.Queue(maxsize=1)
+    process = context.Process(
+        target=_extract_in_child,
+        args=(job_id, result_queue),
+        daemon=False,
+    )
+    process.start()
+    timeout_seconds = max(90, min(300, int(settings.request_timeout_seconds) * 4))
+    process.join(timeout_seconds)
+    if process.is_alive():
+        process.terminate()
+        process.join(5)
+        if process.is_alive():
+            process.kill()
+            process.join(2)
+        raise TimeoutError(f"انتهت مهلة التحميل بعد {timeout_seconds} ثانية")
+    try:
+        payload = result_queue.get(timeout=2)
+    except Empty as exc:
+        raise RuntimeError(f"تعطلت عملية الاستخراج برمز {process.exitcode}") from exc
+    finally:
+        result_queue.close()
+        result_queue.join_thread()
+    if not isinstance(payload, dict):
+        raise RuntimeError("تعذر قراءة نتيجة الاستخراج")
+    if not payload.get("ok"):
+        raise RuntimeError(str(payload.get("error") or "فشل استخراج الوسائط"))
+    return payload
+
+
+def process_job(job_id: str) -> None:
+    with SessionLocal() as database:
+        job = database.get(Job, job_id)
+        if not job:
+            return
+        job.status = "downloading"
+        job.error = None
+        database.commit()
+
+    write_status(job_id, "downloading", 0)
+    try:
+        payload = _run_extraction_with_timeout(job_id)
+        result = dict(payload["result"])
+        media_file = Path(str(payload["file_path"]))
+        file_size = int(payload["file_size"])
+        write_status(job_id, "done", 100, size=file_size)
         with SessionLocal() as database:
             current = database.get(Job, job_id)
             if current is None:
@@ -84,9 +144,10 @@ def process_job(job_id: str) -> None:
             current.title = result.get("title") or current.title
             current.thumbnail = result.get("thumbnail")
             current.duration = result.get("duration")
-            current.file_size = media_file.stat().st_size
+            current.file_size = file_size
             current.file_path = str(media_file)
             current.status = "ready"
+            current.error = None
             current.download_token = make_token(job_id)
             current.expires_at = utcnow() + timedelta(seconds=settings.file_ttl_seconds)
             database.commit()
@@ -99,8 +160,6 @@ def process_job(job_id: str) -> None:
                 current.status = "failed"
                 current.error = safe
                 database.commit()
-    finally:
-        extractor.cleanup()
 
 
 def main() -> None:

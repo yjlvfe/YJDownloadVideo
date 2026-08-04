@@ -41,6 +41,13 @@ def _sample(name: str) -> str:
         raise HTTPException(404, "Unknown acceptance sample") from exc
 
 
+def _sample_name(url: str) -> str:
+    for name, sample_url in _SAMPLES.items():
+        if url == sample_url:
+            return name
+    return "unknown"
+
+
 def _probe_file(path: str) -> dict[str, Any]:
     media_path = Path(path)
     if not media_path.is_file():
@@ -62,9 +69,8 @@ def _probe_file(path: str) -> dict[str, Any]:
         check=False,
     )
     if completed.returncode != 0:
-        raise RuntimeError("ffprobe failed")
-    payload = json.loads(completed.stdout or "{}")
-    streams = payload.get("streams") or []
+        raise RuntimeError(f"ffprobe failed: {completed.stderr[:240]}")
+    streams = json.loads(completed.stdout or "{}").get("streams") or []
     return {
         "bytes": media_path.stat().st_size,
         "has_video": any(item.get("codec_type") == "video" for item in streams),
@@ -77,22 +83,48 @@ def _probe_file(path: str) -> dict[str, Any]:
     }
 
 
+def _job_dict(job: Job) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "id": job.id,
+        "sample": _sample_name(job.url),
+        "status": job.status,
+        "format_id": job.requested_format,
+        "file_size": job.file_size,
+        "duration": job.duration,
+        "error": str(job.error or "")[:500] or None,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+    }
+    if job.status == "ready" and job.file_path and os.path.isfile(job.file_path):
+        try:
+            result["probe"] = _probe_file(job.file_path)
+        except Exception as exc:  # noqa: BLE001
+            result["probe_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+    return result
+
+
 def _job_snapshot(job_id: str) -> dict[str, Any]:
     with SessionLocal() as database:
         job = database.get(Job, job_id)
         if job is None or job.owner_key != _OWNER:
             raise RuntimeError("Acceptance job not found")
-        result: dict[str, Any] = {
-            "id": job.id,
-            "status": job.status,
-            "format_id": job.requested_format,
-            "file_size": job.file_size,
-            "duration": job.duration,
-            "error": str(job.error or "")[:300] or None,
-        }
-        if job.status == "ready" and job.file_path and os.path.isfile(job.file_path):
-            result["probe"] = _probe_file(job.file_path)
-        return result
+        return _job_dict(job)
+
+
+def _database_jobs() -> list[dict[str, Any]]:
+    with SessionLocal() as database:
+        jobs = (
+            database.query(Job)
+            .filter(Job.owner_key == _OWNER)
+            .order_by(Job.created_at.desc())
+            .limit(100)
+            .all()
+        )
+        return [_job_dict(job) for job in jobs]
+
+
+def _publish(results: list[dict[str, Any]]) -> None:
+    with _STATE_LOCK:
+        _STATE["results"] = json.loads(json.dumps(results, ensure_ascii=False))
 
 
 def _run_quality(sample: str, quality: str) -> dict[str, Any]:
@@ -109,6 +141,7 @@ def _run_quality(sample: str, quality: str) -> dict[str, Any]:
         time.sleep(1)
     return {
         "id": job_id,
+        "sample": sample,
         "status": "failed",
         "format_id": quality,
         "error": "acceptance timeout",
@@ -133,9 +166,12 @@ def _run_acceptance() -> None:
                 "inspect": None,
                 "qualities": [],
             }
+            results.append(sample_result)
+            _publish(results)
             try:
                 inspection = _inspect_local(url)
                 sample_result["inspect"] = inspection
+                _publish(results)
                 quality_ids = [
                     str(item.get("id") or "")
                     for item in inspection.get("formats", [])
@@ -148,11 +184,10 @@ def _run_acceptance() -> None:
                         continue
                     seen.add(quality)
                     sample_result["qualities"].append(_run_quality(sample, quality))
+                    _publish(results)
             except Exception as exc:  # noqa: BLE001
                 sample_result["error"] = f"{type(exc).__name__}: {str(exc)[:800]}"
-            results.append(sample_result)
-            with _STATE_LOCK:
-                _STATE["results"] = list(results)
+                _publish(results)
         overall = all(
             not item.get("error")
             and item.get("inspect")
@@ -191,6 +226,7 @@ def _summary() -> dict[str, Any]:
                 "has_video": probe.get("has_video"),
                 "has_audio": probe.get("has_audio"),
                 "height": probe.get("height"),
+                "probe_error": job.get("probe_error"),
             })
         inspect = item.get("inspect") or {}
         samples.append({
@@ -231,6 +267,10 @@ def _install() -> None:
     @app.get(f"{_PREFIX}/summary")
     def acceptance_summary() -> dict[str, Any]:
         return _summary()
+
+    @app.get(f"{_PREFIX}/jobs")
+    def acceptance_jobs() -> dict[str, Any]:
+        return {"jobs": _database_jobs()}
 
     @app.get(f"{_PREFIX}/inspect/{{sample}}")
     def inspect_sample(sample: str) -> dict[str, Any]:

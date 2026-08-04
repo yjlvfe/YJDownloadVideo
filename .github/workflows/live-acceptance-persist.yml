@@ -1,0 +1,93 @@
+name: Persist Live Media Acceptance
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  live-acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install acceptance dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          pip install httpx==0.28.1
+      - name: Run all supplied URLs and advertised qualities
+        id: acceptance
+        shell: bash
+        run: |
+          set +e
+          python scripts/acceptance_media.py \
+            --base-url https://yjvideodownloads.onrender.com \
+            --timeout 1200 \
+            --json live-acceptance.json \
+            2>&1 | tee live-acceptance.log
+          code=${PIPESTATUS[0]}
+          echo "exit_code=${code}" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Persist sanitized evidence to test branch
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p docs/test-evidence
+          if [ -f live-acceptance.json ]; then
+            cp live-acceptance.json docs/test-evidence/live-acceptance.json
+          fi
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          source = Path("live-acceptance.json")
+          target = Path("docs/test-evidence/live-acceptance-summary.md")
+          lines = ["# Live Render acceptance", ""]
+          if not source.is_file():
+              lines.append("No JSON report was produced.")
+          else:
+              report = json.loads(source.read_text(encoding="utf-8"))
+              lines.append(f"Overall: **{'PASS' if report.get('ok') else 'FAIL'}**")
+              lines.append("")
+              for item in report.get("results", []):
+                  inspected = item.get("inspect") or {}
+                  lines.append(f"## {item.get('platform') or 'unknown'}")
+                  lines.append(f"Inspection: {'PASS' if inspected.get('ok') else 'FAIL'}")
+                  if not inspected.get("ok"):
+                      lines.append(f"Classification: `{inspected.get('classification') or 'unclassified'}`")
+                  for quality in item.get("qualities", []):
+                      key = quality.get("requested_quality") or "unknown"
+                      state = "PASS" if quality.get("ok") else "FAIL"
+                      details = []
+                      if quality.get("height"):
+                          details.append(f"{quality['height']}p")
+                      if quality.get("has_audio") is not None:
+                          details.append("audio" if quality.get("has_audio") else "no-audio")
+                      if not quality.get("ok"):
+                          details.append(str(quality.get("classification") or "unclassified"))
+                      suffix = f" ({', '.join(details)})" if details else ""
+                      lines.append(f"- `{key}`: **{state}**{suffix}")
+                  lines.append("")
+          target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/test-evidence/live-acceptance.json docs/test-evidence/live-acceptance-summary.md
+          if ! git diff --cached --quiet; then
+            git commit -m "test: record live acceptance evidence [skip ci]"
+            git push origin "HEAD:${{ github.head_ref }}"
+          fi
+      - name: Enforce acceptance result
+        if: always()
+        shell: bash
+        run: exit "${{ steps.acceptance.outputs.exit_code || '1' }}"

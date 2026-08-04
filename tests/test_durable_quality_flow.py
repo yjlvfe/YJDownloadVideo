@@ -38,7 +38,10 @@ def test_quality_payload_round_trip_is_json_safe() -> None:
         {
             "key": "480",
             "label": "480p",
-            "selector": "bestvideo[height<=480]+bestaudio/best[height<=480]",
+            "selector": (
+                "bestvideo[height=480]+bestaudio/best[height=480]/"
+                "bestvideo[height<=480]+bestaudio/best[height<=480]"
+            ),
             "size": 2_000_000,
         },
     ]

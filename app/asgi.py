@@ -6,11 +6,13 @@ import os
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
 
+from . import main as main_module
 from .config import settings
 from .db import Job, SessionLocal
+from .durable_runtime import get_job_queue
 from .main import app as fastapi_app
 from .media_choice import safe_media_title
 from .rate_limit import SlidingWindowLimiter
@@ -40,6 +42,42 @@ def _sanitized_safe_error(exc: Exception) -> str:
 
 
 TelegramFlow._safe_error = staticmethod(_sanitized_safe_error)
+
+
+def _verify_transition_worker_request(raw: bytes, request: Request, context: str) -> bool:
+    from .remote_worker import verify_worker_request, verify_worker_signature
+
+    signature_v2 = request.headers.get("x-worker-signature-v2", "")
+    timestamp = request.headers.get("x-worker-timestamp", "")
+    nonce = request.headers.get("x-worker-nonce", "")
+    if signature_v2 and timestamp and nonce:
+        queue = get_job_queue()
+        secret = settings.worker_shared_secret or settings.telegram_bot_token
+        if verify_worker_request(
+            secret,
+            raw,
+            signature_v2,
+            context,
+            timestamp=timestamp,
+            nonce=nonce,
+            consume_nonce=lambda value, expires: queue.consume_nonce(
+                value,
+                expires_at=expires,
+            ),
+        ):
+            return True
+
+    # Old Vercel deployments have only this v1 header. Keep it during this one
+    # rollout so Render and Vercel can deploy in either order without downtime.
+    return verify_worker_signature(
+        settings.telegram_bot_token,
+        raw,
+        request.headers.get("x-telegram-worker-auth", ""),
+        context,
+    )
+
+
+main_module._verify_signed_worker_request = _verify_transition_worker_request
 
 
 def media_response_metadata(path: str | Path, title: str) -> tuple[str, str]:

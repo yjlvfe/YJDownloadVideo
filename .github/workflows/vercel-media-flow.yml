@@ -42,7 +42,7 @@ jobs:
               "aws-access-key": re.compile(rb"\bAKIA[0-9A-Z]{16}\b"),
           }
           ignored = {pathlib.Path(".github/workflows/vercel-media-flow.yml")}
-          detected: set[str] = set()
+          detected: list[tuple[str, str]] = []
           for raw in tracked:
               if not raw:
                   continue
@@ -57,9 +57,10 @@ jobs:
                   continue
               for name, pattern in patterns.items():
                   if pattern.search(data):
-                      detected.add(name)
+                      detected.append((name, path.as_posix()))
           if detected:
-              print("Potential secret-shaped categories detected: " + ", ".join(sorted(detected)))
+              for category, path in sorted(set(detected)):
+                  print(f"Potential {category} value detected in tracked file: {path}")
               print("Values and matching lines are intentionally not displayed.")
               sys.exit(1)
           print("No secret-shaped values detected in tracked text files.")

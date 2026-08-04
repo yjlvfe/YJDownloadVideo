@@ -14,15 +14,50 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      - name: Install dependencies and audit tool
+        run: pip install -r requirements.txt pip-audit
+      - name: Audit Python dependencies
+        run: pip-audit -r requirements.txt
+      - name: Scan tracked files for secret-shaped values
+        shell: bash
+        run: |
+          python - <<'PY'
+          import pathlib
+          import re
+          import subprocess
+          import sys
+
+          tracked = subprocess.check_output(["git", "ls-files", "-z"]).split(b"\0")
+          patterns = (
+              re.compile(rb"\b\d{6,12}:[A-Za-z0-9_-]{30,}\b"),
+              re.compile(rb"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
+              re.compile(rb"\bgh[pousr]_[A-Za-z0-9]{30,}\b"),
+              re.compile(rb"\bAKIA[0-9A-Z]{16}\b"),
+          )
+          detected = False
+          for raw in tracked:
+              if not raw:
+                  continue
+              path = pathlib.Path(raw.decode("utf-8", errors="surrogateescape"))
+              try:
+                  data = path.read_bytes()
+              except OSError:
+                  continue
+              if any(pattern.search(data) for pattern in patterns):
+                  detected = True
+                  break
+          if detected:
+              print("Potential secret-shaped value detected; release blocked.")
+              sys.exit(1)
+          print("No secret-shaped values detected in tracked files.")
+          PY
       - name: Run complete test suite
         run: PYTHONPATH=. pytest -q
       - name: Compile application and operational scripts

@@ -1,0 +1,8 @@
+{
+  "name": "yj-download-video-runtime",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "youtubei.js": "17.0.1"
+  }
+}

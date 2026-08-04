@@ -11,22 +11,19 @@ from .extractor import COMBINED_ITAGS, DownloadError, UniversalExtractor, _ytdlp
 
 
 _PATCHED = False
-_WPC_RUNTIME_PATCHED = False
 _ORIGINAL_BASE_OPTIONS = UniversalExtractor._base_ytdlp_opts
 _ORIGINAL_DOWNLOAD = UniversalExtractor.download
 _ORIGINAL_RETRYABLE = durable_runtime.is_retryable_job_error
 
 
 def _browser_path() -> str:
-    return os.getenv("BROWSER_BIN", "/usr/bin/chromium-browser").strip() or "/usr/bin/chromium-browser"
+    return os.getenv("WPC_BROWSER_BIN", "/usr/local/bin/chromium-wpc").strip() or "/usr/local/bin/chromium-wpc"
 
 
 def _provider_extractor_args() -> dict[str, dict[str, list[str]]]:
     provider_url = os.getenv("BGUTIL_PROVIDER_URL", "http://127.0.0.1:4416").rstrip("/")
     visitor_data = os.getenv("YOUTUBE_VISITOR_DATA", "").strip()
     youtube_args: dict[str, list[str]] = {
-        # Keep yt-dlp's maintained default client set first, then retain mweb
-        # with per-video PO tokens as the primary anonymous web fallback.
         "player_client": ["default", "mweb"],
         "fetch_pot": ["always"],
         "pot_trace": ["false"],
@@ -47,9 +44,6 @@ def _provider_extractor_args() -> dict[str, dict[str, list[str]]]:
 
 
 def _wpc_only_extractor_args() -> dict[str, dict[str, list[str]]]:
-    # Force the browser-backed provider for this bounded second attempt. The
-    # unreachable BgUtils endpoint makes its higher-priority provider unavailable
-    # without stopping the production provider used by concurrent requests.
     return {
         "youtube": {
             "player_client": ["mweb"],
@@ -66,42 +60,11 @@ def _wpc_only_extractor_args() -> dict[str, dict[str, list[str]]]:
     }
 
 
-def _install_wpc_runtime_patch() -> None:
-    global _WPC_RUNTIME_PATCHED
-    if _WPC_RUNTIME_PATCHED:
-        return
-    from yt_dlp_plugins.extractor.getpot_wpc import WPCPTP
-
-    original = WPCPTP.get_nodriver_config
-    if getattr(original, "_yjdownload_safe", False):
-        _WPC_RUNTIME_PATCHED = True
-        return
-
-    def container_config(self: Any, proxy: str | None = None):
-        config = original(self, proxy)
-        # WPC deliberately uses a headed browser. Render supplies Xvfb, while
-        # Chromium runs as root in this container and therefore needs sandbox
-        # disabled. Keep DevTools memory use bounded on the free instance.
-        config.sandbox = False
-        for argument in (
-            "--disable-dev-shm-usage",
-            "--disable-gpu",
-            "--window-size=1280,720",
-        ):
-            config.add_argument(argument)
-        return config
-
-    container_config._yjdownload_safe = True  # type: ignore[attr-defined]
-    WPCPTP.get_nodriver_config = container_config
-    _WPC_RUNTIME_PATCHED = True
-
-
 def _patched_base_options(
     self: UniversalExtractor,
     outdir: Path | str,
     preferred: str = "best",
 ) -> dict[str, Any]:
-    # Audio is handled after a verified best-video download in _patched_download.
     effective = "best" if preferred == "audio" else preferred
     options = _ORIGINAL_BASE_OPTIONS(self, outdir, effective)
     options["extractor_args"] = _provider_extractor_args()
@@ -123,9 +86,6 @@ def _candidate_itag(url: str) -> int:
 
 
 def _live_cdp_candidates(discovery: dict[str, Any], preferred: str) -> list[Any]:
-    # Source identity is the trust boundary. CDP/CDP-DOM means Chromium saw the
-    # request live in its own session. HTML/JS candidates (including YouTube
-    # storyboards) remain excluded regardless of their host or file extension.
     candidates = [
         candidate
         for candidate in (discovery.get("candidates") or [])
@@ -212,9 +172,6 @@ def _download_youtube_with_live_browser_fallback(
         try:
             result = _download_youtube_with_wpc(self, url, outdir, effective)
         except DownloadError as wpc_error:
-            # Never turn yt-dlp metadata URLs or HTML storyboards into a second
-            # download attempt. Only URLs observed live by Chromium's CDP are
-            # eligible after both PO-token providers fail.
             try:
                 discovery = self.discover(url, skip_ytdlp=True)
             except DownloadError as browser_error:
@@ -272,8 +229,6 @@ def _patched_download(
         )
     if preferred != "audio":
         return _ORIGINAL_DOWNLOAD(self, url, outdir, preferred, title_hint)
-    # Use the exact path already proven by the video button, then extract audio
-    # from that complete media file. This avoids broken platform audio-only URLs.
     video_result = _ORIGINAL_DOWNLOAD(self, url, outdir, "best", title_hint)
     return self._convert_to_audio_only(video_result, outdir)
 
@@ -322,7 +277,6 @@ def install() -> None:
     global _PATCHED
     if _PATCHED:
         return
-    _install_wpc_runtime_patch()
     UniversalExtractor._base_ytdlp_opts = _patched_base_options
     UniversalExtractor.download = _patched_download
     UniversalExtractor._ytdlp_info = _patched_ytdlp_info

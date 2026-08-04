@@ -37,7 +37,9 @@ RUN python3 -m venv /opt/venv \
 
 COPY . .
 RUN mkdir -p /app/data /app/storage \
-    && chmod 0755 /app/docker/start-render.sh \
+    && chmod 0755 /app/docker/start-render.sh /app/docker/chromium-wpc.sh \
+    && ln -sf /app/docker/chromium-wpc.sh /usr/local/bin/chromium-wpc \
+    && test -x /usr/local/bin/chromium-wpc \
     && ffmpeg -version >/dev/null \
     && node --version \
     && command -v Xvfb >/dev/null \

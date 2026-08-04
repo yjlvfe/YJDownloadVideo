@@ -40,11 +40,17 @@ def test_base_options_include_provider_and_node_runtime(monkeypatch, tmp_path: P
     assert "height<=720" in options["format"]
 
 
-def test_browser_po_token_provider_is_installed_and_uses_chromium(monkeypatch):
-    monkeypatch.setenv("BROWSER_BIN", "/usr/bin/chromium")
+def test_browser_po_token_provider_is_installed_and_uses_wrapper(monkeypatch):
+    monkeypatch.setenv("WPC_BROWSER_BIN", "/usr/local/bin/test-chromium-wpc")
     args = _provider_extractor_args()
     assert importlib.metadata.version("yt-dlp-getpot-wpc") == "1.0.0"
-    assert args["youtubepot-wpc"]["browser_path"] == ["/usr/bin/chromium"]
+    assert args["youtubepot-wpc"]["browser_path"] == ["/usr/local/bin/test-chromium-wpc"]
+
+
+def test_browser_po_token_provider_defaults_to_safe_wrapper(monkeypatch):
+    monkeypatch.delenv("WPC_BROWSER_BIN", raising=False)
+    args = _provider_extractor_args()
+    assert args["youtubepot-wpc"]["browser_path"] == ["/usr/local/bin/chromium-wpc"]
 
 
 def test_youtube_uses_wpc_before_cdp_after_primary_provider_fails(monkeypatch, tmp_path: Path):

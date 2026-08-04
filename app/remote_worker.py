@@ -61,7 +61,6 @@ def create_worker_signature(
 
     digest = hmac.new(token.encode("utf-8"), digestmod=hashlib.sha256)
     if timestamp is None:
-        # Transitional helper retained for old tests and rollback compatibility.
         digest.update(_LEGACY_PREFIX)
         digest.update(b"\0")
         digest.update(context.encode("utf-8"))
@@ -91,7 +90,6 @@ def verify_worker_signature(
     signature: str,
     context: str = "telegram-update",
 ) -> bool:
-    """Verify only the legacy v1 format during the migration window."""
     if not isinstance(signature, str) or len(signature) != 64:
         return False
     expected = create_worker_signature(token, body, context)
@@ -139,6 +137,44 @@ def verify_worker_request(
     return bool(consume_nonce(normalized_nonce, issued_at + max_age_seconds))
 
 
+def build_worker_auth_headers(
+    body: bytes,
+    context: str,
+    *,
+    timestamp: int | None = None,
+    nonce: str | None = None,
+) -> dict[str, str]:
+    """Emit both signatures so Vercel and Render can deploy in either order.
+
+    Old Render reads x-telegram-worker-auth (v1). New Render verifies the v2
+    signature and replay headers. The v1 header can be removed in a later release
+    after all production instances have run v2.
+    """
+    secret = _worker_secret()
+    if not secret:
+        raise ValueError("worker secret is required")
+    issued_at = int(time.time() if timestamp is None else timestamp)
+    request_nonce = nonce or secrets.token_urlsafe(24)
+    legacy_secret = settings.telegram_bot_token or secret
+    return {
+        "x-telegram-worker-auth": create_worker_signature(
+            legacy_secret,
+            body,
+            context,
+        ),
+        "x-worker-signature-v2": create_worker_signature(
+            secret,
+            body,
+            context,
+            timestamp=issued_at,
+            nonce=request_nonce,
+        ),
+        "x-worker-timestamp": str(issued_at),
+        "x-worker-nonce": request_nonce,
+        "x-worker-version": "2",
+    }
+
+
 def worker_endpoint(origin: str, path: str) -> str:
     if not origin.startswith(("https://", "http://")):
         raise ValueError("remote worker URL must use HTTP or HTTPS")
@@ -162,20 +198,11 @@ async def _post_signed(
 ) -> dict[str, Any]:
     if not settings.remote_worker_url:
         raise RemoteWorkerError("خادم معالجة الملفات غير مضبوط")
-    secret = _worker_secret()
-    if not secret:
+    if not _worker_secret():
         raise RemoteWorkerError("سر الاتصال بخادم المعالجة غير مضبوط")
 
     raw = _body(payload)
-    timestamp = int(time.time())
-    nonce = secrets.token_urlsafe(24)
-    signature = create_worker_signature(
-        secret,
-        raw,
-        context,
-        timestamp=timestamp,
-        nonce=nonce,
-    )
+    auth_headers = build_worker_auth_headers(raw, context)
     timeout = httpx.Timeout(timeout_seconds, connect=min(20.0, timeout_seconds))
     limits = httpx.Limits(max_connections=2, max_keepalive_connections=0)
     try:
@@ -190,10 +217,7 @@ async def _post_signed(
                 content=raw,
                 headers={
                     "content-type": "application/json",
-                    "x-telegram-worker-auth": signature,
-                    "x-worker-timestamp": str(timestamp),
-                    "x-worker-nonce": nonce,
-                    "x-worker-version": "2",
+                    **auth_headers,
                 },
             )
     except httpx.TimeoutException as exc:

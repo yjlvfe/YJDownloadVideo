@@ -18,7 +18,9 @@ from .main import CreateRequest, _create_job_local, _inspect_local, app
 _PREFIX = "/__acceptance_f0e41c9e6a13"
 _OWNER = "acceptance-probe-f0e41c9e6a13"
 _SAMPLES = {
-    "normal": "https://youtu.be/kTRs4ycFp_o?si=1T_A4IsWT8fxnkce",
+    "tiktok": "https://vm.tiktok.com/ZGdxjnte8/",
+    "instagram": "https://www.instagram.com/reel/DbkuNu8oMA5/?igsh=MWVuMjJlOWszdHQzMw==",
+    "youtube": "https://youtu.be/kTRs4ycFp_o?si=1T_A4IsWT8fxnkce",
     "short": "https://youtube.com/shorts/T7DA7VTZ_Zs?si=1F9UnPcRym93-Tyu",
 }
 _STATE: dict[str, Any] = {

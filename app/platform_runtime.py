@@ -42,6 +42,12 @@ def _is_googlevideo_url(url: str) -> bool:
     return host == "googlevideo.com" or host.endswith(".googlevideo.com")
 
 
+def _trusted_googlevideo_candidate(candidate: Any) -> bool:
+    source = str(getattr(candidate, "source", "") or "").lower()
+    cookies_file = str(getattr(candidate, "cookies_file", "") or "").strip()
+    return source in {"cdp", "cdp-dom"} and bool(cookies_file)
+
+
 def _safe_ytdlp_logger() -> SafeYtdlpLogger:
     return SafeYtdlpLogger(
         secrets_to_hide=(
@@ -239,7 +245,10 @@ def install_runtime_patches() -> None:
         # googlevideo URLs are short-lived and bound to the extraction identity.
         # Replaying one through a generic downloader or a different client is
         # exactly what produced the repeated 403s observed on Render.
-        if _is_googlevideo_url(str(candidate.url)):
+        if (
+            _is_googlevideo_url(str(candidate.url))
+            and not _trusted_googlevideo_candidate(candidate)
+        ):
             raise DownloadError(FRAGMENT_FORBIDDEN)
         return original_candidate(self, candidate, outdir, referer)
 

@@ -146,6 +146,22 @@ def _absolutize(base: str, url: str) -> str | None:
     return urljoin(base, url)
 
 
+def _browser_capture_url(url: str) -> str:
+    host = (urlparse(str(url or "")).hostname or "").lower()
+    if host == "youtu.be" or host.endswith("youtube.com"):
+        match = re.search(
+            r"(?:v=|shorts/|youtu\.be/|embed/|live/)([A-Za-z0-9_-]{11})",
+            str(url),
+        )
+        if match:
+            video_id = match.group(1)
+            return (
+                f"https://www.youtube.com/embed/{video_id}"
+                "?autoplay=1&playsinline=1&controls=1"
+            )
+    return url
+
+
 def _ytdlp_headers() -> dict:
     """هيدرات المتصفح لطلبات yt-dlp — بدون Accept-Encoding:
     ترويسة br اليدوية تكسر استخراج player response في يوتيوب (yt-dlp يدير التشفير بنفسه)."""
@@ -226,13 +242,16 @@ class UniversalExtractor:
         try:
             return self._download_ytdlp(url, outdir, preferred)
         except DownloadError as de:
-            # يوتيوب محجوب من الخادم (فحص روبوت)؟ جرّب الخوادم البديلة قبل الاستسلام
+            first_err = str(de)[:200]
             if not (self._is_youtube(url) and not self.cookies_file):
                 raise
             try:
                 return self._download_yt_fallback(url, outdir, preferred)
-            except DownloadError:
-                raise de
+            except DownloadError as fallback_error:
+                first_err = f"{first_err} / {str(fallback_error)[:120]}"
+            # A blocked yt-dlp request must not suppress the independent HTML/CDP
+            # layers. Public YouTube embeds can still expose a playable media
+            # request from the same Render egress and browser session.
         except Exception as e:  # noqa: BLE001
             first_err = str(e)[:200]
 
@@ -682,6 +701,8 @@ class UniversalExtractor:
         """يفتح الصفحة في Chromium هيدلس ويلتقط طلبات الوسائط من الشبكة."""
         from websockets.sync.client import connect
 
+        capture_url = _browser_capture_url(url)
+
         bin_path = self._find_browser()
         port = _free_port()
         prof = tempfile.mkdtemp(prefix="yj-browser-")
@@ -724,7 +745,7 @@ class UniversalExtractor:
             # أنشئ تبويبًا
             import urllib.request
             req = urllib.request.Request(
-                f"http://127.0.0.1:{port}/json/new?{url}",
+                f"http://127.0.0.1:{port}/json/new?{capture_url}",
                 method="PUT")
             with urllib.request.urlopen(req, timeout=5) as r:
                 page = json.loads(r.read())
@@ -750,7 +771,7 @@ class UniversalExtractor:
                 mid = 0
                 send(ws, mid := mid + 1, "Network.enable")
                 send(ws, mid := mid + 1, "Page.enable")
-                send(ws, mid := mid + 1, "Page.navigate", {"url": url})
+                send(ws, mid := mid + 1, "Page.navigate", {"url": capture_url})
                 deadline = time.time() + max_wait
                 while time.time() < deadline:
                     try:

@@ -8,7 +8,7 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
@@ -66,6 +66,13 @@ def platform_name(url: str) -> str:
     if host == "youtu.be" or "youtube" in host:
         return "youtube"
     return host or "unknown"
+
+
+def absolute_download_url(base_url: str, value: str) -> str:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return ""
+    return urljoin(f"{base_url.rstrip('/')}/", candidate)
 
 
 def _json(response: httpx.Response) -> dict[str, Any]:
@@ -245,7 +252,10 @@ def run_acceptance(
                     if str(job.get("status")) != "ready":
                         message = str(job.get("error") or "media job failed")
                         raise RuntimeError(message)
-                    download_url = str(job.get("download_url") or "")
+                    download_url = absolute_download_url(
+                        base_url,
+                        str(job.get("download_url") or ""),
+                    )
                     if not download_url:
                         raise RuntimeError("ready job has no download URL")
                     with tempfile.TemporaryDirectory(prefix="yj-acceptance-") as temporary:

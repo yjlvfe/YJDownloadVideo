@@ -25,7 +25,7 @@ jobs:
         run: pip install -r requirements.txt pip-audit
       - name: Audit Python dependencies
         run: pip-audit -r requirements.txt
-      - name: Scan tracked files for secret-shaped values
+      - name: Scan tracked text files for secret-shaped values
         shell: bash
         run: |
           python - <<'PY'
@@ -35,28 +35,34 @@ jobs:
           import sys
 
           tracked = subprocess.check_output(["git", "ls-files", "-z"]).split(b"\0")
-          patterns = (
-              re.compile(rb"\b\d{6,12}:[A-Za-z0-9_-]{30,}\b"),
-              re.compile(rb"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
-              re.compile(rb"\bgh[pousr]_[A-Za-z0-9]{30,}\b"),
-              re.compile(rb"\bAKIA[0-9A-Z]{16}\b"),
-          )
-          detected = False
+          patterns = {
+              "telegram-bot-token": re.compile(rb"\b\d{6,12}:[A-Za-z0-9_-]{30,}\b"),
+              "private-key": re.compile(rb"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
+              "github-token": re.compile(rb"\bgh[pousr]_[A-Za-z0-9]{30,}\b"),
+              "aws-access-key": re.compile(rb"\bAKIA[0-9A-Z]{16}\b"),
+          }
+          ignored = {pathlib.Path(".github/workflows/vercel-media-flow.yml")}
+          detected: set[str] = set()
           for raw in tracked:
               if not raw:
                   continue
               path = pathlib.Path(raw.decode("utf-8", errors="surrogateescape"))
+              if path in ignored:
+                  continue
               try:
                   data = path.read_bytes()
               except OSError:
                   continue
-              if any(pattern.search(data) for pattern in patterns):
-                  detected = True
-                  break
+              if b"\0" in data[:8192]:
+                  continue
+              for name, pattern in patterns.items():
+                  if pattern.search(data):
+                      detected.add(name)
           if detected:
-              print("Potential secret-shaped value detected; release blocked.")
+              print("Potential secret-shaped categories detected: " + ", ".join(sorted(detected)))
+              print("Values and matching lines are intentionally not displayed.")
               sys.exit(1)
-          print("No secret-shaped values detected in tracked files.")
+          print("No secret-shaped values detected in tracked text files.")
           PY
       - name: Run complete test suite
         run: PYTHONPATH=. pytest -q

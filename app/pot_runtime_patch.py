@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -75,6 +76,19 @@ def _patched_base_options(
 def _is_youtube_url(url: str) -> bool:
     host = (urlparse(str(url or "")).hostname or "").lower()
     return host == "youtu.be" or host.endswith("youtube.com")
+
+
+def _canonical_youtube_url(url: str) -> str:
+    raw = str(url or "").strip()
+    if not _is_youtube_url(raw):
+        return raw
+    match = re.search(
+        r"(?:[?&]v=|shorts/|youtu\.be/|embed/|live/)([A-Za-z0-9_-]{11})",
+        raw,
+    )
+    if not match:
+        return raw
+    return f"https://www.youtube.com/watch?v={match.group(1)}"
 
 
 def _candidate_itag(url: str) -> int:
@@ -221,9 +235,10 @@ def _patched_download(
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     if _is_youtube_url(url):
+        canonical_url = _canonical_youtube_url(url)
         return _download_youtube_with_live_browser_fallback(
             self,
-            url,
+            canonical_url,
             outdir,
             preferred,
         )
@@ -236,6 +251,7 @@ def _patched_download(
 def _patched_ytdlp_info(self: UniversalExtractor, url: str) -> dict[str, Any]:
     from yt_dlp import YoutubeDL
 
+    source_url = _canonical_youtube_url(url) if _is_youtube_url(url) else url
     options: dict[str, Any] = {
         "quiet": True,
         "skip_download": True,
@@ -249,7 +265,7 @@ def _patched_ytdlp_info(self: UniversalExtractor, url: str) -> dict[str, Any]:
     if self.cookies_file:
         options["cookiefile"] = self.cookies_file
     with YoutubeDL(options) as ydl:
-        info = ydl.extract_info(url, download=False)
+        info = ydl.extract_info(source_url, download=False)
     if not info:
         raise DownloadError("yt-dlp لم يُرجع بيانات")
     if info.get("is_live"):

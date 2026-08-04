@@ -47,8 +47,8 @@ class Settings(BaseSettings):
     telegram_api_hash: str = Field(default="", repr=False)
     sessions_dir: str = "./data/sessions"
     telegram_send_limit_bytes: int = 2_000_000_000
-    max_active_jobs_per_ip: int = 50
-    max_active_jobs_per_telegram_user: int = 50
+    max_active_jobs_per_ip: int = 2
+    max_active_jobs_per_telegram_user: int = 2
     ytdlp_bin: str = "yt-dlp"
     ffmpeg_bin: str = "ffmpeg"
     youtube_proxy_url: str = ""

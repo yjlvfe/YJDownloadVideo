@@ -1,0 +1,118 @@
+name: Stable Live Main Acceptance
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/live-main-acceptance-trigger
+
+permissions:
+  contents: write
+
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install acceptance dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          pip install httpx==0.28.1
+      - name: Wait for the trigger SHA to be live on Render
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.request
+
+          expected = os.environ["GITHUB_SHA"]
+          base = "https://yjvideodownloads.onrender.com/health"
+          deadline = time.time() + 900
+          while time.time() < deadline:
+              try:
+                  probe = f"{base}?sha={expected[:12]}&t={int(time.time())}"
+                  request = urllib.request.Request(probe, headers={"Cache-Control": "no-cache"})
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      data = json.load(response)
+                  print(f"health sha={data.get('gitSha')} queue={data.get('queueDepth')}")
+                  if (
+                      data.get("ok")
+                      and data.get("gitSha") == expected
+                      and data.get("ffmpegReady")
+                      and data.get("javascriptRuntimeReady")
+                  ):
+                      raise SystemExit(0)
+              except Exception as exc:
+                  print(f"health pending: {type(exc).__name__}")
+              time.sleep(10)
+          raise SystemExit("Render did not reach the trigger SHA")
+          PY
+      - name: Run all supplied URLs and advertised qualities
+        shell: bash
+        run: |
+          set +e
+          python scripts/acceptance_media.py \
+            --base-url https://yjvideodownloads.onrender.com \
+            --timeout 1200 \
+            --json docs/live-acceptance-latest.json \
+            > live-acceptance.log 2>&1
+          echo "$?" > live-acceptance.exit
+          tail -n 160 live-acceptance.log || true
+          exit 0
+      - name: Write compact evidence summary
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("docs/live-acceptance-latest.json")
+          lines = ["# Live production acceptance", ""]
+          if not path.exists():
+              lines += ["Overall: **FAIL**", "", "No report was produced."]
+          else:
+              report = json.loads(path.read_text(encoding="utf-8"))
+              lines += [f"Overall: **{'PASS' if report.get('ok') else 'FAIL'}**", ""]
+              for item in report.get("results", []):
+                  lines.append(f"## {item.get('platform', 'unknown')}")
+                  inspected = item.get("inspect") or {}
+                  lines.append(f"Inspection: **{'PASS' if inspected.get('ok') else 'FAIL'}**")
+                  if not inspected.get("ok"):
+                      lines.append(f"- `{inspected.get('classification', 'unclassified')}`: `{str(inspected.get('error', ''))[:240]}`")
+                  for quality in item.get("qualities", []):
+                      key = quality.get("requested_quality")
+                      if quality.get("ok"):
+                          lines.append(
+                              f"- `{key}`: **PASS** — {quality.get('bytes', 0)} bytes, "
+                              f"video={quality.get('has_video')}, audio={quality.get('has_audio')}, "
+                              f"height={quality.get('height')}"
+                          )
+                      else:
+                          lines.append(
+                              f"- `{key}`: **FAIL** [{quality.get('classification', 'unclassified')}] "
+                              f"`{str(quality.get('error', ''))[:240]}`"
+                          )
+                  lines.append("")
+          Path("docs/live-acceptance-latest.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+      - name: Persist evidence and remove temporary runner
+        shell: bash
+        run: |
+          rm -f .github/live-main-acceptance-trigger
+          rm -f .github/workflows/live-main-acceptance.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "test: refresh stable live production acceptance"
+          git push origin HEAD:main

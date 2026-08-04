@@ -25,6 +25,19 @@ ASGIApp = Callable[[dict[str, Any], Callable[..., Awaitable[dict[str, Any]]], Ca
 
 
 _original_safe_error = TelegramFlow._safe_error
+_EXPLICIT_MEDIA_TYPES = {
+    ".mp4": "video/mp4",
+    ".m4v": "video/mp4",
+    ".webm": "video/webm",
+    ".mkv": "video/x-matroska",
+    ".mov": "video/quicktime",
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+    ".ogg": "audio/ogg",
+    ".opus": "audio/ogg",
+    ".wav": "audio/wav",
+}
 
 
 def _sanitized_safe_error(exc: Exception) -> str:
@@ -82,9 +95,13 @@ main_module._verify_signed_worker_request = _verify_transition_worker_request
 
 def media_response_metadata(path: str | Path, title: str) -> tuple[str, str]:
     media_path = Path(path)
-    suffix = media_path.suffix or ".bin"
+    suffix = media_path.suffix.lower() or ".bin"
     filename = safe_media_title(title or media_path.stem or "media", suffix)
-    media_type = mimetypes.guess_type(media_path.name)[0] or "application/octet-stream"
+    media_type = (
+        _EXPLICIT_MEDIA_TYPES.get(suffix)
+        or mimetypes.guess_type(media_path.name)[0]
+        or "application/octet-stream"
+    )
     return filename, media_type
 
 

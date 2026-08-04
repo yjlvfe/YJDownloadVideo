@@ -13,13 +13,20 @@ _ORIGINAL_BASE_OPTIONS = UniversalExtractor._base_ytdlp_opts
 
 def _provider_extractor_args() -> dict[str, dict[str, list[str]]]:
     provider_url = os.getenv("BGUTIL_PROVIDER_URL", "http://127.0.0.1:4416").rstrip("/")
+    visitor_data = os.getenv("YOUTUBE_VISITOR_DATA", "").strip()
+    youtube_args: dict[str, list[str]] = {
+        "player_client": ["mweb"],
+        "fetch_pot": ["always"],
+        "pot_trace": ["false"],
+        "use_ad_playback_context": ["true"],
+        # Render's egress is rate-limited on the normal webpage. The mweb
+        # Innertube client plus a stable visitor binding is the source of truth.
+        "player_skip": ["webpage", "configs"],
+    }
+    if visitor_data:
+        youtube_args["visitor_data"] = [visitor_data]
     return {
-        "youtube": {
-            "player_client": ["mweb"],
-            "fetch_pot": ["always"],
-            "pot_trace": ["false"],
-            "use_ad_playback_context": ["true"],
-        },
+        "youtube": youtube_args,
         "youtubepot-bgutilhttp": {
             "base_url": [provider_url],
         },

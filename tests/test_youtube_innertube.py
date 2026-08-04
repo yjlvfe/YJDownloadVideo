@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -72,7 +71,7 @@ def test_innertube_download_enforces_final_size(monkeypatch, tmp_path):
     assert not output.exists()
 
 
-def test_innertube_failure_redacts_urls(monkeypatch, tmp_path):
+def test_innertube_failure_redacts_secret_query(monkeypatch, tmp_path):
     completed = SimpleNamespace(
         returncode=1,
         stdout="",
@@ -85,4 +84,6 @@ def test_innertube_failure_redacts_urls(monkeypatch, tmp_path):
             url="https://youtu.be/kTRs4ycFp_o",
             output_dir=tmp_path,
         )
-    assert "secret.example" not in str(caught.value)
+    message = str(caught.value)
+    assert "token=value" not in message
+    assert "[REDACTED_QUERY]" in message

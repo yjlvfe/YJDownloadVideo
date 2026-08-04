@@ -3,6 +3,8 @@ import { join } from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { spawnSync } from 'node:child_process';
+import { BG } from 'bgutils-js';
+import { JSDOM } from 'jsdom';
 import { Innertube, UniversalCache } from 'youtubei.js';
 
 const stderr = (...args) => process.stderr.write(`${args.map(String).join(' ')}\n`);
@@ -11,6 +13,7 @@ console.error = stderr;
 
 const [action = 'self-test', videoId = '', requested = 'best', outputDir = '.', maxBytesRaw = '0'] = process.argv.slice(2);
 const maxBytes = Math.max(0, Number(maxBytesRaw || 0));
+const BOTGUARD_REQUEST_KEY = 'O43z0dpjhgX20SCx4KAo';
 
 const value = (object, ...keys) => {
   for (const key of keys) {
@@ -94,8 +97,60 @@ function runFfmpeg(args) {
   }
 }
 
+async function generatePoToken() {
+  const bootstrap = await Innertube.create({
+    cache: new UniversalCache(false),
+    generate_session_locally: true,
+    retrieve_player: false,
+    lang: 'en',
+    location: 'US',
+  });
+  const visitorData = bootstrap.session?.context?.client?.visitorData;
+  if (!visitorData) throw new Error('Could not obtain YouTube visitor data');
+
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+    url: 'https://www.youtube.com/',
+  });
+  const previousWindow = globalThis.window;
+  const previousDocument = globalThis.document;
+  Object.assign(globalThis, {
+    window: dom.window,
+    document: dom.window.document,
+  });
+
+  try {
+    const bgConfig = {
+      fetch: (input, init) => fetch(input, init),
+      globalObj: globalThis,
+      identifier: visitorData,
+      requestKey: BOTGUARD_REQUEST_KEY,
+    };
+    const challenge = await BG.Challenge.create(bgConfig);
+    if (!challenge) throw new Error('Could not create BotGuard challenge');
+    const interpreter = challenge.interpreterJavascript?.privateDoNotAccessOrElseSafeScriptWrappedValue;
+    if (!interpreter) throw new Error('Could not load BotGuard interpreter');
+    new Function(interpreter)();
+    const tokenResult = await BG.PoToken.generate({
+      program: challenge.program,
+      globalName: challenge.globalName,
+      bgConfig,
+    });
+    if (!tokenResult?.poToken) throw new Error('Could not generate YouTube PO token');
+    return { visitorData, poToken: tokenResult.poToken };
+  } finally {
+    dom.window.close();
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+    if (previousDocument === undefined) delete globalThis.document;
+    else globalThis.document = previousDocument;
+  }
+}
+
 async function createClient() {
+  const { visitorData, poToken } = await generatePoToken();
   return Innertube.create({
+    po_token: poToken,
+    visitor_data: visitorData,
     cache: new UniversalCache(false),
     generate_session_locally: true,
     retrieve_player: true,
@@ -122,7 +177,7 @@ function inspectPayload(info) {
   if (!heights.length) throw new Error('no downloadable video qualities');
   const formats = [{ id: 'best', label: 'الأفضل تلقائيًا', size: null }];
   formats.push(...heights.map((height) => ({ id: String(height), label: `${height}p`, size: null })));
-  return { source: 'youtubei-js', ...metadata, formats };
+  return { source: 'youtubei-js-potoken', ...metadata, formats };
 }
 
 async function downloadAudio(info, target) {
@@ -174,7 +229,7 @@ async function downloadVideo(info, target, height) {
 
 async function main() {
   if (action === 'self-test') {
-    process.stdout.write(`${JSON.stringify({ ok: true, runtime: 'youtubei.js' })}\n`);
+    process.stdout.write(`${JSON.stringify({ ok: true, runtime: 'youtubei.js+bgutils' })}\n`);
     return;
   }
   const info = await loadInfo();

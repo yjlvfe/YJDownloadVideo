@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.metadata
 from pathlib import Path
 
 from app import extractor as extractor_module
@@ -36,6 +37,13 @@ def test_base_options_include_provider_and_node_runtime(monkeypatch, tmp_path: P
     assert youtube["player_skip"] == ["webpage", "configs"]
     assert options["js_runtimes"] == {"node": {}}
     assert "height<=720" in options["format"]
+
+
+def test_browser_po_token_provider_is_installed_and_uses_chromium(monkeypatch):
+    monkeypatch.setenv("BROWSER_BIN", "/usr/bin/chromium")
+    args = _provider_extractor_args()
+    assert importlib.metadata.version("yt-dlp-getpot-wpc") == "1.0.0"
+    assert args["youtubepot-wpc"]["browser_path"] == ["/usr/bin/chromium"]
 
 
 def test_youtube_403_skips_ytdlp_discovery_and_uses_only_live_cdp_candidates(

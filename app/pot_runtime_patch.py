@@ -3,9 +3,11 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 from . import durable_runtime
-from .extractor import DownloadError, UniversalExtractor, _ytdlp_headers
+from . import extractor as extractor_module
+from .extractor import COMBINED_ITAGS, DownloadError, UniversalExtractor, _ytdlp_headers
 
 
 _PATCHED = False
@@ -49,6 +51,91 @@ def _patched_base_options(
     return options
 
 
+def _is_youtube_url(url: str) -> bool:
+    host = (urlparse(str(url or "")).hostname or "").lower()
+    return host == "youtu.be" or host.endswith("youtube.com")
+
+
+def _candidate_itag(url: str) -> int:
+    try:
+        value = (parse_qs(urlparse(str(url)).query).get("itag") or ["0"])[0]
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _live_cdp_candidates(discovery: dict[str, Any], preferred: str) -> list[Any]:
+    candidates = [
+        candidate
+        for candidate in (discovery.get("candidates") or [])
+        if str(getattr(candidate, "source", "") or "").lower() in {"cdp", "cdp-dom"}
+        and "googlevideo.com" in str(getattr(candidate, "url", "") or "").lower()
+    ]
+    target = int(preferred) if str(preferred).isdigit() else None
+
+    def rank(candidate: Any) -> tuple[int, int, int, int, int]:
+        height = int(getattr(candidate, "height", 0) or 0)
+        combined = int(_candidate_itag(str(candidate.url)) in COMBINED_ITAGS)
+        score = int(getattr(candidate, "score", 0) or 0)
+        if target is None:
+            return combined, int(height > 0), height, score, 0
+        exact = int(height == target)
+        under = int(0 < height <= target)
+        distance = -abs(height - target) if height else -100_000
+        return exact, combined, under, distance, score
+
+    return sorted(candidates, key=rank, reverse=True)
+
+
+def _download_youtube_with_live_browser_fallback(
+    self: UniversalExtractor,
+    url: str,
+    outdir: Path,
+    preferred: str,
+) -> dict[str, Any]:
+    effective = "best" if preferred == "audio" else preferred
+    try:
+        result = self._download_ytdlp(url, outdir, effective)
+    except DownloadError as primary_error:
+        if not self.use_browser:
+            raise
+        # Never turn yt-dlp metadata URLs or HTML storyboards into a second
+        # download attempt. Only URLs observed live by Chromium's CDP are bound
+        # to the active browser session and are eligible here.
+        discovery = self.discover(url, skip_ytdlp=True)
+        candidates = _live_cdp_candidates(discovery, effective)
+        if not candidates:
+            raise DownloadError(
+                f"youtube_browser_no_media: {str(primary_error)[:160]}"
+            ) from primary_error
+
+        last_error = str(primary_error)
+        for index, candidate in enumerate(candidates[:8]):
+            attempt_dir = Path(outdir) / f"cdp-{index}"
+            attempt_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                candidate_result = self._download_candidate(candidate, attempt_dir, referer=url)
+                media_path = Path(candidate_result["path"])
+                if not extractor_module._has_audio(media_path):
+                    last_error = "cdp candidate has no audio"
+                    continue
+                if not extractor_module._has_video(media_path):
+                    last_error = "cdp candidate has no video"
+                    continue
+                result = candidate_result
+                break
+            except Exception as candidate_error:  # noqa: BLE001
+                last_error = str(candidate_error)[:200]
+        else:
+            raise DownloadError(
+                f"youtube_browser_fallback_failed: {last_error}"
+            ) from primary_error
+
+    if preferred == "audio":
+        return self._convert_to_audio_only(result, Path(outdir))
+    return result
+
+
 def _patched_download(
     self: UniversalExtractor,
     url: str,
@@ -56,12 +143,21 @@ def _patched_download(
     preferred: str = "best",
     title_hint: str = "",
 ) -> dict[str, Any]:
+    outdir = Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    if _is_youtube_url(url):
+        return _download_youtube_with_live_browser_fallback(
+            self,
+            url,
+            outdir,
+            preferred,
+        )
     if preferred != "audio":
         return _ORIGINAL_DOWNLOAD(self, url, outdir, preferred, title_hint)
     # Use the exact path already proven by the video button, then extract audio
     # from that complete media file. This avoids broken platform audio-only URLs.
     video_result = _ORIGINAL_DOWNLOAD(self, url, outdir, "best", title_hint)
-    return self._convert_to_audio_only(video_result, Path(outdir))
+    return self._convert_to_audio_only(video_result, outdir)
 
 
 def _patched_ytdlp_info(self: UniversalExtractor, url: str) -> dict[str, Any]:
@@ -93,6 +189,8 @@ def _patched_retryable(message: str) -> bool:
     terminal_markers = (
         "http error 403",
         "403 forbidden",
+        "youtube_browser_no_media",
+        "youtube_browser_fallback_failed",
         "unable to obtain file audio codec",
         "postprocessing:",
     )

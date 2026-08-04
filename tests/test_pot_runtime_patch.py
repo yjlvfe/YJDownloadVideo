@@ -62,6 +62,41 @@ def test_shorts_url_is_canonicalized_to_watch_url():
     ) == "https://www.youtube.com/watch?v=kTRs4ycFp_o"
 
 
+def test_shorts_use_lightweight_clients_before_wpc(monkeypatch, tmp_path: Path):
+    extractor = UniversalExtractor(use_browser=True)
+    output = tmp_path / "short.mp4"
+    output.write_bytes(b"media")
+
+    monkeypatch.setattr(
+        extractor,
+        "_download_ytdlp",
+        lambda *args, **kwargs: (_ for _ in ()).throw(DownloadError("youtube_fragment_forbidden")),
+    )
+    monkeypatch.setattr(
+        pot_patch_module,
+        "_download_youtube_lightweight",
+        lambda *args, **kwargs: {
+            "path": str(output),
+            "title": "short",
+            "duration": 10,
+            "thumbnail": "",
+            "ext": "mp4",
+        },
+    )
+    monkeypatch.setattr(
+        pot_patch_module,
+        "_download_youtube_with_wpc",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("WPC should not run")),
+    )
+
+    result = extractor.download(
+        "https://youtube.com/shorts/T7DA7VTZ_Zs?si=1F9UnPcRym93-Tyu",
+        tmp_path,
+        "best",
+    )
+    assert result["path"] == str(output)
+
+
 def test_youtube_uses_wpc_before_cdp_after_primary_provider_fails(monkeypatch, tmp_path: Path):
     extractor = UniversalExtractor(use_browser=True)
     output = tmp_path / "wpc.mp4"

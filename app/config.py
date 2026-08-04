@@ -15,10 +15,19 @@ DEFAULT_REMOTE_WORKER_URL = "https://yjvideodownloads.onrender.com"
 VERCEL_RUNTIME = os.getenv("VERCEL") == "1"
 
 
+def _deployment_git_sha() -> str:
+    return str(
+        os.getenv("GIT_SHA")
+        or os.getenv("RENDER_GIT_COMMIT")
+        or os.getenv("VERCEL_GIT_COMMIT_SHA")
+        or "unknown"
+    )
+
+
 class Settings(BaseSettings):
     app_name: str = "YJDownloadVideo"
     environment: str = "development"
-    git_sha: str = "unknown"
+    git_sha: str = Field(default_factory=_deployment_git_sha)
     secret_key: str = Field(default="change-me", repr=False)
     worker_shared_secret: str = Field(default="", repr=False)
     admin_api_token: str = Field(default="", repr=False)

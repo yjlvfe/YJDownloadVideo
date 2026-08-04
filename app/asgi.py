@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 import json
+import mimetypes
+import os
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from fastapi import HTTPException
+from fastapi.responses import FileResponse, RedirectResponse
+
 from .config import settings
+from .db import Job, SessionLocal
 from .main import app as fastapi_app
+from .media_choice import safe_media_title
 from .rate_limit import SlidingWindowLimiter
 from .redaction import sanitize_external_error
+from .security import read_token
 from .telegram_flow import TelegramFlow
 
 
@@ -31,6 +40,64 @@ def _sanitized_safe_error(exc: Exception) -> str:
 
 
 TelegramFlow._safe_error = staticmethod(_sanitized_safe_error)
+
+
+def media_response_metadata(path: str | Path, title: str) -> tuple[str, str]:
+    media_path = Path(path)
+    suffix = media_path.suffix or ".bin"
+    filename = safe_media_title(title or media_path.stem or "media", suffix)
+    media_type = mimetypes.guess_type(media_path.name)[0] or "application/octet-stream"
+    return filename, media_type
+
+
+def _install_download_route() -> None:
+    # Replace the compatibility route from app.main so responses always use the
+    # actual output extension and MIME type (MP4, M4A, MP3, WebM, etc.).
+    fastapi_app.router.routes = [
+        route
+        for route in fastapi_app.router.routes
+        if getattr(route, "path", None) != "/download/{token}"
+    ]
+
+    def stream_download(token: str):
+        if settings.vercel_mode:
+            return RedirectResponse(
+                f"{settings.remote_worker_url.rstrip('/')}/download/{token}",
+                status_code=307,
+            )
+        try:
+            job_id = read_token(token)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(404, "الرابط منتهي أو غير صالح") from exc
+
+        with SessionLocal() as database:
+            job = database.get(Job, job_id)
+            if (
+                not job
+                or job.status != "ready"
+                or not job.file_path
+                or not os.path.isfile(job.file_path)
+            ):
+                raise HTTPException(404, "الملف غير متاح")
+            filename, media_type = media_response_metadata(
+                job.file_path,
+                str(job.title or job_id),
+            )
+            return FileResponse(
+                job.file_path,
+                filename=filename,
+                media_type=media_type,
+            )
+
+    fastapi_app.add_api_route(
+        "/download/{token}",
+        stream_download,
+        methods=["GET"],
+        name="download_stream",
+    )
+
+
+_install_download_route()
 
 
 class RateLimitedASGI:

@@ -36,6 +36,8 @@ def test_runtime_defaults_are_safe_and_observable(monkeypatch: pytest.MonkeyPatc
     assert settings.youtube_proxy_url == "http://proxy.example:8080"
     assert settings.enable_public_youtube_fallback is False
     assert settings.file_ttl_seconds == 3600
+    assert settings.max_active_jobs_per_ip == 2
+    assert settings.max_active_jobs_per_telegram_user == 2
     assert "worker-secret" not in repr(settings)
 
 

@@ -1,0 +1,522 @@
+name: Direct Local Innertube Repair
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/direct-innertube-repair-trigger
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - name: Add pinned local YouTube Innertube runtime
+        shell: bash
+        run: |
+          cat > package.json <<'JSON'
+          {
+            "name": "yj-download-video-runtime",
+            "private": true,
+            "type": "module",
+            "dependencies": {
+              "youtubei.js": "17.0.1"
+            }
+          }
+          JSON
+          npm install --package-lock-only --ignore-scripts
+
+          cat > scripts/youtube_innertube.mjs <<'JS'
+          import { createWriteStream, existsSync, mkdirSync, statSync, unlinkSync } from 'node:fs';
+          import { basename, join } from 'node:path';
+          import { Readable, Transform } from 'node:stream';
+          import { pipeline } from 'node:stream/promises';
+          import { spawnSync } from 'node:child_process';
+          import { Innertube, UniversalCache } from 'youtubei.js';
+
+          const stderr = (...args) => process.stderr.write(`${args.map(String).join(' ')}\n`);
+          console.warn = stderr;
+          console.error = stderr;
+
+          const [action = 'self-test', videoId = '', requested = 'best', outputDir = '.', maxBytesRaw = '0'] = process.argv.slice(2);
+          const maxBytes = Math.max(0, Number(maxBytesRaw || 0));
+
+          const value = (object, ...keys) => {
+            for (const key of keys) {
+              if (object && object[key] !== undefined && object[key] !== null) return object[key];
+            }
+            return undefined;
+          };
+
+          const boolValue = (object, ...keys) => Boolean(value(object, ...keys));
+
+          function mime(format) {
+            return String(value(format, 'mime_type', 'mimeType') || '').toLowerCase();
+          }
+
+          function formatHeight(format) {
+            const direct = Number(value(format, 'height') || 0);
+            if (direct > 0) return direct;
+            const label = String(value(format, 'quality_label', 'qualityLabel') || '');
+            const match = label.match(/(\d{3,4})p/i);
+            return match ? Number(match[1]) : 0;
+          }
+
+          function hasVideo(format) {
+            return boolValue(format, 'has_video', 'hasVideo') || mime(format).startsWith('video/');
+          }
+
+          function hasAudio(format) {
+            if (boolValue(format, 'has_audio', 'hasAudio')) return true;
+            if (mime(format).startsWith('audio/')) return true;
+            const codecs = String(value(format, 'codecs') || mime(format));
+            return /mp4a|opus|vorbis|aac/i.test(codecs);
+          }
+
+          function allFormats(info) {
+            const streaming = value(info, 'streaming_data', 'streamingData') || {};
+            return [
+              ...(value(streaming, 'formats') || []),
+              ...(value(streaming, 'adaptive_formats', 'adaptiveFormats') || []),
+            ];
+          }
+
+          function basicMetadata(info) {
+            const basic = value(info, 'basic_info', 'basicInfo') || {};
+            const thumbnails = value(basic, 'thumbnail', 'thumbnails') || [];
+            const thumbnail = Array.isArray(thumbnails)
+              ? String(value(thumbnails.at(-1) || {}, 'url') || '')
+              : String(value(thumbnails, 'url') || '');
+            return {
+              title: String(value(basic, 'title') || videoId),
+              duration: Number(value(basic, 'duration') || 0) || null,
+              thumbnail,
+            };
+          }
+
+          function availableHeights(info) {
+            return [...new Set(
+              allFormats(info)
+                .filter((format) => hasVideo(format))
+                .map(formatHeight)
+                .filter((height) => height > 0),
+            )].sort((a, b) => b - a);
+          }
+
+          async function writeWebStream(stream, path, byteLimit) {
+            let count = 0;
+            const limiter = new Transform({
+              transform(chunk, _encoding, callback) {
+                count += chunk.length;
+                if (byteLimit > 0 && count > byteLimit) {
+                  callback(new Error('media exceeds configured size limit'));
+                  return;
+                }
+                callback(null, chunk);
+              },
+            });
+            await pipeline(Readable.fromWeb(stream), limiter, createWriteStream(path));
+            return count;
+          }
+
+          function runFfmpeg(args) {
+            const result = spawnSync('ffmpeg', args, {
+              encoding: 'utf8',
+              stdio: ['ignore', 'ignore', 'pipe'],
+              timeout: 600_000,
+            });
+            if (result.status !== 0) {
+              throw new Error(`ffmpeg failed: ${String(result.stderr || '').slice(-500)}`);
+            }
+          }
+
+          async function createClient() {
+            return Innertube.create({
+              cache: new UniversalCache(false),
+              generate_session_locally: true,
+              retrieve_player: true,
+              lang: 'en',
+              location: 'US',
+            });
+          }
+
+          async function loadInfo() {
+            if (!/^[A-Za-z0-9_-]{11}$/.test(videoId)) throw new Error('invalid YouTube video id');
+            const youtube = await createClient();
+            const info = await youtube.getBasicInfo(videoId);
+            const playability = value(info, 'playability_status', 'playabilityStatus') || {};
+            const status = String(value(playability, 'status') || 'OK');
+            if (status !== 'OK' && !allFormats(info).length) {
+              throw new Error(`YouTube playability: ${status}`);
+            }
+            return info;
+          }
+
+          function inspectPayload(info) {
+            const metadata = basicMetadata(info);
+            const heights = availableHeights(info);
+            const formats = [{ id: 'best', label: 'الأفضل تلقائيًا', size: null }];
+            formats.push(...heights.map((height) => ({ id: String(height), label: `${height}p`, size: null })));
+            return { source: 'youtubei-js', ...metadata, formats };
+          }
+
+          async function downloadAudio(info, target) {
+            const source = `${target}.source`;
+            let stream;
+            try {
+              stream = await info.download({ type: 'audio', quality: 'best', format: 'mp4', codec: 'mp4a' });
+            } catch {
+              stream = await info.download({ type: 'audio', quality: 'best', format: 'any' });
+            }
+            await writeWebStream(stream, source, maxBytes);
+            runFfmpeg(['-y', '-i', source, '-vn', '-c:a', 'aac', '-b:a', '192k', target]);
+            unlinkSync(source);
+          }
+
+          async function downloadVideo(info, target, height) {
+            const videoSource = `${target}.video-source`;
+            const audioSource = `${target}.audio-source`;
+            const quality = `${height}p`;
+            let videoStream;
+            try {
+              videoStream = await info.download({ type: 'video', quality, format: 'mp4', codec: 'avc' });
+            } catch {
+              videoStream = await info.download({ type: 'video', quality, format: 'any' });
+            }
+            let audioStream;
+            try {
+              audioStream = await info.download({ type: 'audio', quality: 'best', format: 'mp4', codec: 'mp4a' });
+            } catch {
+              audioStream = await info.download({ type: 'audio', quality: 'best', format: 'any' });
+            }
+            await writeWebStream(videoStream, videoSource, maxBytes);
+            await writeWebStream(audioStream, audioSource, maxBytes);
+            runFfmpeg([
+              '-y', '-i', videoSource, '-i', audioSource,
+              '-map', '0:v:0', '-map', '1:a:0',
+              '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-shortest',
+              '-movflags', '+faststart', target,
+            ]);
+            unlinkSync(videoSource);
+            unlinkSync(audioSource);
+          }
+
+          async function main() {
+            if (action === 'self-test') {
+              process.stdout.write(`${JSON.stringify({ ok: true, runtime: 'youtubei.js' })}\n`);
+              return;
+            }
+            const info = await loadInfo();
+            if (action === 'inspect') {
+              process.stdout.write(`${JSON.stringify(inspectPayload(info))}\n`);
+              return;
+            }
+            if (action !== 'download') throw new Error('unsupported action');
+            mkdirSync(outputDir, { recursive: true });
+            const metadata = basicMetadata(info);
+            const heights = availableHeights(info);
+            if (!heights.length && requested !== 'audio') throw new Error('no downloadable video qualities');
+            if (requested === 'audio') {
+              const target = join(outputDir, `${videoId}_youtubei_audio.m4a`);
+              await downloadAudio(info, target);
+              if (!existsSync(target)) throw new Error('audio output was not created');
+              process.stdout.write(`${JSON.stringify({ path: target, ext: 'm4a', ...metadata, bytes: statSync(target).size })}\n`);
+              return;
+            }
+            const targetHeight = requested === 'best' ? heights[0] : Number(requested);
+            if (!Number.isInteger(targetHeight) || !heights.includes(targetHeight)) {
+              throw new Error(`requested quality ${requested} is unavailable; available=${heights.join(',')}`);
+            }
+            const target = join(outputDir, `${videoId}_youtubei_${targetHeight}p.mp4`);
+            await downloadVideo(info, target, targetHeight);
+            if (!existsSync(target)) throw new Error('video output was not created');
+            process.stdout.write(`${JSON.stringify({ path: target, ext: 'mp4', height: targetHeight, ...metadata, bytes: statSync(target).size })}\n`);
+          }
+
+          main().catch((error) => {
+            const message = String(error?.message || error || 'unknown YouTube.js error').replace(/https?:\/\/\S+/g, '[URL]');
+            process.stderr.write(`${message.slice(0, 1200)}\n`);
+            process.exit(1);
+          });
+          JS
+
+          cat > app/youtube_innertube.py <<'PY'
+          from __future__ import annotations
+
+          import json
+          import re
+          import subprocess
+          from pathlib import Path
+          from typing import Any
+
+          from .redaction import sanitize_external_error
+
+
+          _VIDEO_ID = re.compile(r"(?:v=|shorts/|youtu\.be/|embed/|live/)([A-Za-z0-9_-]{11})")
+
+
+          class YouTubeInnertubeError(RuntimeError):
+              pass
+
+
+          def extract_youtube_video_id(url: str) -> str:
+              match = _VIDEO_ID.search(str(url or ""))
+              if not match:
+                  raise YouTubeInnertubeError("تعذر تحديد معرّف فيديو يوتيوب")
+              return match.group(1)
+
+
+          def _parse_last_json(stdout: str) -> dict[str, Any]:
+              for line in reversed(str(stdout or "").splitlines()):
+                  line = line.strip()
+                  if not line.startswith("{"):
+                      continue
+                  try:
+                      value = json.loads(line)
+                  except json.JSONDecodeError:
+                      continue
+                  if isinstance(value, dict):
+                      return value
+              raise YouTubeInnertubeError("YouTube.js لم يُرجع نتيجة صالحة")
+
+
+          def run_youtube_innertube(
+              *,
+              action: str,
+              url: str,
+              preferred: str = "best",
+              output_dir: Path | None = None,
+              max_bytes: int = 0,
+              timeout_seconds: int = 900,
+          ) -> dict[str, Any]:
+              root = Path(__file__).resolve().parent.parent
+              script = root / "scripts" / "youtube_innertube.mjs"
+              if not script.is_file():
+                  raise YouTubeInnertubeError("YouTube.js runtime غير مثبت")
+              video_id = extract_youtube_video_id(url)
+              destination = Path(output_dir or root / "storage").resolve()
+              destination.mkdir(parents=True, exist_ok=True)
+              command = [
+                  "node",
+                  str(script),
+                  action,
+                  video_id,
+                  str(preferred or "best"),
+                  str(destination),
+                  str(max(0, int(max_bytes or 0))),
+              ]
+              try:
+                  completed = subprocess.run(
+                      command,
+                      capture_output=True,
+                      text=True,
+                      timeout=max(30, int(timeout_seconds)),
+                      cwd=root,
+                      check=False,
+                  )
+              except (OSError, subprocess.TimeoutExpired) as exc:
+                  raise YouTubeInnertubeError(
+                      sanitize_external_error(f"YouTube.js runtime failed: {exc}", limit=260)
+                  ) from exc
+              if completed.returncode != 0:
+                  message = sanitize_external_error(
+                      completed.stderr or completed.stdout or "YouTube.js failed",
+                      limit=420,
+                  )
+                  raise YouTubeInnertubeError(message)
+              result = _parse_last_json(completed.stdout)
+              if action == "download":
+                  media_path = Path(str(result.get("path") or "")).resolve()
+                  try:
+                      media_path.relative_to(destination)
+                  except ValueError as exc:
+                      raise YouTubeInnertubeError("YouTube.js أعاد مسارًا غير آمن") from exc
+                  if not media_path.is_file():
+                      raise YouTubeInnertubeError("YouTube.js لم ينشئ الملف")
+                  if max_bytes and media_path.stat().st_size > max_bytes:
+                      media_path.unlink(missing_ok=True)
+                      raise YouTubeInnertubeError("حجم الفيديو يتجاوز الحد المسموح")
+                  result["path"] = str(media_path)
+              return result
+          PY
+
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('app/extractor.py')
+          text = path.read_text(encoding='utf-8')
+
+          old = '''        except DownloadError as de:\n            first_err = str(de)[:200]\n            if not (self._is_youtube(url) and not self.cookies_file):\n                raise\n            try:\n                return self._download_yt_fallback(url, outdir, preferred)\n            except DownloadError as fallback_error:\n                first_err = f"{first_err} / {str(fallback_error)[:120]}"\n            # A blocked yt-dlp request must not suppress the independent HTML/CDP\n            # layers. Public YouTube embeds can still expose a playable media\n            # request from the same Render egress and browser session.\n'''
+          new = '''        except DownloadError as de:\n            first_err = str(de)[:200]\n            if not (self._is_youtube(url) and not self.cookies_file):\n                raise\n            try:\n                return self._download_youtube_innertube(url, outdir, preferred)\n            except DownloadError as innertube_error:\n                first_err = f"{first_err} / youtubei: {str(innertube_error)[:120]}"\n            try:\n                return self._download_yt_fallback(url, outdir, preferred)\n            except DownloadError as fallback_error:\n                first_err = f"{first_err} / {str(fallback_error)[:120]}"\n            # A blocked yt-dlp request must not suppress the independent HTML/CDP\n            # layers. Public YouTube embeds can still expose a playable media\n            # request from the same Render egress and browser session.\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f'download catch matches={text.count(old)}')
+          text = text.replace(old, new, 1)
+
+          old = '''        if self._is_youtube(url):\n            try:\n                return self._inspect_yt_fallback(url)\n            except DownloadError:\n                pass\n'''
+          new = '''        if self._is_youtube(url):\n            try:\n                return self._inspect_youtube_innertube(url)\n            except DownloadError:\n                pass\n            try:\n                return self._inspect_yt_fallback(url)\n            except DownloadError:\n                pass\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f'inspect fallback matches={text.count(old)}')
+          text = text.replace(old, new, 1)
+
+          anchor = '''    def _inspect_yt_fallback(self, url: str) -> dict:\n'''
+          methods = '''    def _inspect_youtube_innertube(self, url: str) -> dict:\n        from .youtube_innertube import YouTubeInnertubeError, run_youtube_innertube\n\n        try:\n            return run_youtube_innertube(\n                action="inspect",\n                url=url,\n                max_bytes=self.max_filesize,\n                timeout_seconds=max(90, self.request_timeout * 6),\n            )\n        except YouTubeInnertubeError as exc:\n            raise DownloadError(str(exc)) from exc\n\n    def _download_youtube_innertube(\n            self, url: str, outdir: Path, preferred: str) -> dict:\n        from .youtube_innertube import YouTubeInnertubeError, run_youtube_innertube\n\n        try:\n            result = run_youtube_innertube(\n                action="download",\n                url=url,\n                preferred=preferred,\n                output_dir=outdir,\n                max_bytes=self.max_filesize,\n                timeout_seconds=900,\n            )\n        except YouTubeInnertubeError as exc:\n            raise DownloadError(str(exc)) from exc\n        path = Path(str(result.get("path") or ""))\n        if not path.is_file():\n            raise DownloadError("YouTube.js لم ينشئ الملف")\n        if not _has_audio(path):\n            raise DownloadError("YouTube.js output has no audio")\n        if preferred != "audio" and not _has_video(path):\n            raise DownloadError("YouTube.js output has no video")\n        return {\n            "path": str(path),\n            "title": str(result.get("title") or ""),\n            "duration": result.get("duration"),\n            "thumbnail": str(result.get("thumbnail") or ""),\n            "ext": str(result.get("ext") or path.suffix.lstrip(".")),\n        }\n\n'''
+          if text.count(anchor) != 1:
+              raise SystemExit(f'Innertube method anchor matches={text.count(anchor)}')
+          text = text.replace(anchor, methods + anchor, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('Dockerfile')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace(
+              '      ca-certificates chromium curl ffmpeg nodejs python3 py3-pip py3-virtualenv\n',
+              '      ca-certificates chromium curl ffmpeg nodejs npm python3 py3-pip py3-virtualenv\n',
+              1,
+          )
+          text = text.replace(
+              'WORKDIR /app\nCOPY requirements.txt .\n',
+              'WORKDIR /app\nCOPY package.json package-lock.json ./\nRUN npm ci --omit=dev --ignore-scripts \\\n    && node scripts-does-not-exist 2>/dev/null || true\nCOPY requirements.txt .\n',
+              1,
+          )
+          text = text.replace(
+              '    && node --version \\\n    && python -c "import curl_cffi, yt_dlp, yt_dlp_ejs" \\\n',
+              '    && node --version \\\n    && node scripts/youtube_innertube.mjs self-test \\\n    && python -c "import curl_cffi, yt_dlp, yt_dlp_ejs" \\\n',
+              1,
+          )
+          # Remove the harmless shell probe from the npm layer; scripts are copied later.
+          text = text.replace(' \\\n    && node scripts-does-not-exist 2>/dev/null || true\nCOPY requirements.txt .\n', '\nCOPY requirements.txt .\n', 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          cat > tests/test_youtube_innertube.py <<'PY'
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+          from types import SimpleNamespace
+
+          import pytest
+
+          import app.youtube_innertube as module
+          from app.youtube_innertube import (
+              YouTubeInnertubeError,
+              extract_youtube_video_id,
+              run_youtube_innertube,
+          )
+
+
+          def test_extract_youtube_video_id_supports_watch_short_and_share_urls():
+              assert extract_youtube_video_id('https://youtu.be/kTRs4ycFp_o?x=1') == 'kTRs4ycFp_o'
+              assert extract_youtube_video_id('https://youtube.com/shorts/T7DA7VTZ_Zs') == 'T7DA7VTZ_Zs'
+              assert extract_youtube_video_id('https://youtube.com/watch?v=kTRs4ycFp_o') == 'kTRs4ycFp_o'
+
+
+          def test_innertube_inspect_parses_last_json_line(monkeypatch, tmp_path):
+              payload = {'source': 'youtubei-js', 'formats': [{'id': '720'}]}
+              completed = SimpleNamespace(
+                  returncode=0,
+                  stdout='diagnostic\n' + json.dumps(payload) + '\n',
+                  stderr='',
+              )
+              monkeypatch.setattr(module.subprocess, 'run', lambda *args, **kwargs: completed)
+              result = run_youtube_innertube(
+                  action='inspect',
+                  url='https://youtu.be/kTRs4ycFp_o',
+                  output_dir=tmp_path,
+              )
+              assert result == payload
+
+
+          def test_innertube_download_rejects_path_outside_job_directory(monkeypatch, tmp_path):
+              outside = tmp_path.parent / 'outside.mp4'
+              outside.write_bytes(b'media')
+              completed = SimpleNamespace(
+                  returncode=0,
+                  stdout=json.dumps({'path': str(outside)}) + '\n',
+                  stderr='',
+              )
+              monkeypatch.setattr(module.subprocess, 'run', lambda *args, **kwargs: completed)
+              with pytest.raises(YouTubeInnertubeError, match='غير آمن'):
+                  run_youtube_innertube(
+                      action='download',
+                      url='https://youtu.be/kTRs4ycFp_o',
+                      output_dir=tmp_path,
+                  )
+
+
+          def test_innertube_download_enforces_final_size(monkeypatch, tmp_path):
+              output = tmp_path / 'video.mp4'
+              output.write_bytes(b'x' * 20)
+              completed = SimpleNamespace(
+                  returncode=0,
+                  stdout=json.dumps({'path': str(output), 'ext': 'mp4'}) + '\n',
+                  stderr='',
+              )
+              monkeypatch.setattr(module.subprocess, 'run', lambda *args, **kwargs: completed)
+              with pytest.raises(YouTubeInnertubeError, match='حجم'):
+                  run_youtube_innertube(
+                      action='download',
+                      url='https://youtu.be/kTRs4ycFp_o',
+                      output_dir=tmp_path,
+                      max_bytes=10,
+                  )
+              assert not output.exists()
+
+
+          def test_innertube_failure_redacts_urls(monkeypatch, tmp_path):
+              completed = SimpleNamespace(
+                  returncode=1,
+                  stdout='',
+                  stderr='failed at https://secret.example/path?token=value',
+              )
+              monkeypatch.setattr(module.subprocess, 'run', lambda *args, **kwargs: completed)
+              with pytest.raises(YouTubeInnertubeError) as caught:
+                  run_youtube_innertube(
+                      action='inspect',
+                      url='https://youtu.be/kTRs4ycFp_o',
+                      output_dir=tmp_path,
+                  )
+              assert 'secret.example' not in str(caught.value)
+          PY
+
+          rm -f .github/youtube-live-gate-trigger
+          rm -f .github/workflows/youtube-live-gate.yml
+      - name: Verify package and application release gates
+        run: |
+          npm ci --ignore-scripts
+          npm audit --omit=dev --audit-level=high
+          node scripts/youtube_innertube.mjs self-test
+          pip install -r requirements.txt pip-audit
+          pip-audit -r requirements.txt
+          PYTHONPATH=. pytest -q
+          PYTHONPATH=. python -m compileall -q app scripts
+          docker build --tag yjdownload:innertube-gate .
+      - name: Commit verified repair directly to main
+        shell: bash
+        run: |
+          rm -f .github/direct-innertube-repair-trigger
+          rm -f .github/workflows/direct-innertube-repair.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: add local Innertube YouTube runtime"
+          git pull --rebase origin main
+          git push origin HEAD:main

@@ -13,7 +13,6 @@ from fastapi import HTTPException
 
 from .db import Job, SessionLocal
 from .main import CreateRequest, _create_job_local, _inspect_local, app
-from .youtube_innertube import run_youtube_innertube
 
 
 _PREFIX = "/__acceptance_f0e41c9e6a13"
@@ -133,12 +132,6 @@ def _run_acceptance() -> None:
                 "qualities": [],
             }
             try:
-                direct = run_youtube_innertube(
-                    action="inspect",
-                    url=url,
-                    timeout_seconds=180,
-                )
-                sample_result["direct_innertube"] = direct
                 inspection = _inspect_local(url)
                 sample_result["inspect"] = inspection
                 quality_ids = [

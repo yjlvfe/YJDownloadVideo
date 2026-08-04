@@ -206,7 +206,7 @@ def _install() -> None:
     def probe_job(job_id: str) -> dict[str, Any]:
         return _job_snapshot(job_id)
 
-    app.add_event_handler("startup", _start_background_acceptance)
+    app.router.add_event_handler("startup", _start_background_acceptance)
 
 
 _install()

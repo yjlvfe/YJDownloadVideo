@@ -35,12 +35,8 @@ def _provider_extractor_args() -> dict[str, dict[str, list[str]]]:
         youtube_args["visitor_data"] = [visitor_data]
     return {
         "youtube": youtube_args,
-        "youtubepot-bgutilhttp": {
-            "base_url": [provider_url],
-        },
-        "youtubepot-wpc": {
-            "browser_path": [_browser_path()],
-        },
+        "youtubepot-bgutilhttp": {"base_url": [provider_url]},
+        "youtubepot-wpc": {"browser_path": [_browser_path()]},
     }
 
 
@@ -52,20 +48,22 @@ def _wpc_only_extractor_args() -> dict[str, dict[str, list[str]]]:
             "pot_trace": ["false"],
             "use_ad_playback_context": ["true"],
         },
-        "youtubepot-bgutilhttp": {
-            "base_url": ["http://127.0.0.1:1"],
-        },
-        "youtubepot-wpc": {
-            "browser_path": [_browser_path()],
-        },
+        "youtubepot-bgutilhttp": {"base_url": ["http://127.0.0.1:1"]},
+        "youtubepot-wpc": {"browser_path": [_browser_path()]},
     }
 
 
-def _patched_base_options(
-    self: UniversalExtractor,
-    outdir: Path | str,
-    preferred: str = "best",
-) -> dict[str, Any]:
+def _lightweight_extractor_args() -> dict[str, dict[str, list[str]]]:
+    return {
+        "youtube": {
+            "player_client": ["android_vr", "web_safari"],
+            "fetch_pot": ["never"],
+            "player_skip": ["webpage", "configs"],
+        }
+    }
+
+
+def _patched_base_options(self: UniversalExtractor, outdir: Path | str, preferred: str = "best") -> dict[str, Any]:
     effective = "best" if preferred == "audio" else preferred
     options = _ORIGINAL_BASE_OPTIONS(self, outdir, effective)
     options["extractor_args"] = _provider_extractor_args()
@@ -82,10 +80,7 @@ def _canonical_youtube_url(url: str) -> str:
     raw = str(url or "").strip()
     if not _is_youtube_url(raw):
         return raw
-    match = re.search(
-        r"(?:[?&]v=|shorts/|youtu\.be/|embed/|live/)([A-Za-z0-9_-]{11})",
-        raw,
-    )
+    match = re.search(r"(?:[?&]v=|shorts/|youtu\.be/|embed/|live/)([A-Za-z0-9_-]{11})", raw)
     if not match:
         return raw
     return f"https://www.youtube.com/watch?v={match.group(1)}"
@@ -123,18 +118,14 @@ def _live_cdp_candidates(discovery: dict[str, Any], preferred: str) -> list[Any]
 
 def _media_result(info: dict[str, Any], directory: Path, preferred: str) -> dict[str, Any]:
     media_extensions = {".mp4", ".m4a", ".webm", ".mkv", ".mov", ".mp3"}
-    files = [
-        path
-        for path in directory.rglob("*")
-        if path.is_file() and path.suffix.lower() in media_extensions
-    ]
+    files = [path for path in directory.rglob("*") if path.is_file() and path.suffix.lower() in media_extensions]
     if not files:
-        raise DownloadError("youtube_wpc_failed: no media file was created")
+        raise DownloadError("youtube_fallback_failed: no media file was created")
     path = max(files, key=lambda item: item.stat().st_mtime)
     if not extractor_module._has_audio(path):
-        raise DownloadError("youtube_wpc_failed: output has no audio")
+        raise DownloadError("youtube_fallback_failed: output has no audio")
     if preferred != "audio" and not extractor_module._has_video(path):
-        raise DownloadError("youtube_wpc_failed: output has no video")
+        raise DownloadError("youtube_fallback_failed: output has no video")
     return {
         "path": str(path),
         "title": info.get("title") or "",
@@ -144,12 +135,32 @@ def _media_result(info: dict[str, Any], directory: Path, preferred: str) -> dict
     }
 
 
-def _download_youtube_with_wpc(
-    self: UniversalExtractor,
-    url: str,
-    outdir: Path,
-    preferred: str,
-) -> dict[str, Any]:
+def _download_youtube_lightweight(self: UniversalExtractor, url: str, outdir: Path, preferred: str) -> dict[str, Any]:
+    from yt_dlp import YoutubeDL
+
+    effective = "best" if preferred == "audio" else preferred
+    attempt_dir = Path(outdir) / "lightweight"
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+    options = _ORIGINAL_BASE_OPTIONS(self, attempt_dir, effective)
+    options["extractor_args"] = _lightweight_extractor_args()
+    options["js_runtimes"] = {"node": {}}
+    options["outtmpl"] = str(attempt_dir / "%(title).120s.%(ext)s")
+    options["retries"] = 0
+    options["fragment_retries"] = 0
+    options["socket_timeout"] = 20
+    try:
+        with YoutubeDL(options) as ydl:
+            info = ydl.extract_info(url, download=True)
+        if not isinstance(info, dict):
+            raise DownloadError("youtube_lightweight_failed: no metadata returned")
+        return _media_result(info, attempt_dir, effective)
+    except DownloadError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise DownloadError(f"youtube_lightweight_failed: {str(exc)[:220]}") from exc
+
+
+def _download_youtube_with_wpc(self: UniversalExtractor, url: str, outdir: Path, preferred: str) -> dict[str, Any]:
     from yt_dlp import YoutubeDL
 
     effective = "best" if preferred == "audio" else preferred
@@ -178,11 +189,23 @@ def _download_youtube_with_live_browser_fallback(
     url: str,
     outdir: Path,
     preferred: str,
+    *,
+    lightweight_first: bool = False,
 ) -> dict[str, Any]:
     effective = "best" if preferred == "audio" else preferred
     try:
         result = self._download_ytdlp(url, outdir, effective)
     except DownloadError as primary_error:
+        if lightweight_first:
+            try:
+                result = _download_youtube_lightweight(self, url, outdir, effective)
+            except DownloadError:
+                pass
+            else:
+                if preferred == "audio":
+                    return self._convert_to_audio_only(result, Path(outdir))
+                return result
+
         try:
             result = _download_youtube_with_wpc(self, url, outdir, effective)
         except DownloadError as wpc_error:
@@ -194,9 +217,7 @@ def _download_youtube_with_live_browser_fallback(
                 ) from primary_error
             candidates = _live_cdp_candidates(discovery, effective)
             if not candidates:
-                raise DownloadError(
-                    f"youtube_browser_no_media: {str(wpc_error)[:200]}"
-                ) from primary_error
+                raise DownloadError(f"youtube_browser_no_media: {str(wpc_error)[:200]}") from primary_error
 
             last_error = str(wpc_error)
             for index, candidate in enumerate(candidates[:8]):
@@ -216,9 +237,7 @@ def _download_youtube_with_live_browser_fallback(
                 except Exception as candidate_error:  # noqa: BLE001
                     last_error = str(candidate_error)[:200]
             else:
-                raise DownloadError(
-                    f"youtube_browser_fallback_failed: {last_error}"
-                ) from primary_error
+                raise DownloadError(f"youtube_browser_fallback_failed: {last_error}") from primary_error
 
     if preferred == "audio":
         return self._convert_to_audio_only(result, Path(outdir))
@@ -235,12 +254,14 @@ def _patched_download(
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     if _is_youtube_url(url):
+        raw_path = (urlparse(str(url)).path or "").lower()
         canonical_url = _canonical_youtube_url(url)
         return _download_youtube_with_live_browser_fallback(
             self,
             canonical_url,
             outdir,
             preferred,
+            lightweight_first="/shorts/" in raw_path,
         )
     if preferred != "audio":
         return _ORIGINAL_DOWNLOAD(self, url, outdir, preferred, title_hint)
@@ -278,6 +299,7 @@ def _patched_retryable(message: str) -> bool:
     terminal_markers = (
         "http error 403",
         "403 forbidden",
+        "youtube_lightweight_failed",
         "youtube_wpc_failed",
         "youtube_browser_no_media",
         "youtube_browser_fallback_failed",

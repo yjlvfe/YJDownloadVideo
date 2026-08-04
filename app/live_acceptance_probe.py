@@ -175,6 +175,41 @@ def _run_acceptance() -> None:
             )
 
 
+def _summary() -> dict[str, Any]:
+    with _STATE_LOCK:
+        state = json.loads(json.dumps(_STATE, ensure_ascii=False))
+    samples: list[dict[str, Any]] = []
+    for item in state.get("results", []):
+        qualities = []
+        for job in item.get("qualities", []):
+            probe = job.get("probe") or {}
+            qualities.append({
+                "format_id": job.get("format_id"),
+                "status": job.get("status"),
+                "error": job.get("error"),
+                "bytes": probe.get("bytes"),
+                "has_video": probe.get("has_video"),
+                "has_audio": probe.get("has_audio"),
+                "height": probe.get("height"),
+            })
+        inspect = item.get("inspect") or {}
+        samples.append({
+            "sample": item.get("sample"),
+            "inspect_ok": bool(item.get("inspect")) and not item.get("error"),
+            "inspect_source": inspect.get("source"),
+            "formats": [str(value.get("id")) for value in inspect.get("formats", [])],
+            "error": item.get("error"),
+            "qualities": qualities,
+        })
+    return {
+        "status": state.get("status"),
+        "started_at": state.get("started_at"),
+        "finished_at": state.get("finished_at"),
+        "error": state.get("error"),
+        "samples": samples,
+    }
+
+
 async def _start_background_acceptance() -> None:
     global _STARTED
     if _STARTED:
@@ -192,6 +227,10 @@ def _install() -> None:
     def acceptance_status() -> dict[str, Any]:
         with _STATE_LOCK:
             return json.loads(json.dumps(_STATE, ensure_ascii=False))
+
+    @app.get(f"{_PREFIX}/summary")
+    def acceptance_summary() -> dict[str, Any]:
+        return _summary()
 
     @app.get(f"{_PREFIX}/inspect/{{sample}}")
     def inspect_sample(sample: str) -> dict[str, Any]:

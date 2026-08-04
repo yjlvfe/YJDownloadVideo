@@ -29,6 +29,31 @@ def test_cleanup_preserves_active_and_recent_jobs(tmp_path: Path) -> None:
     assert result.removed_count == 1
 
 
+def test_cleanup_gives_temporary_media_a_long_job_grace_period(tmp_path: Path) -> None:
+    temporary = tmp_path / "yjdownload-active"
+    temporary.mkdir()
+    (temporary / "video.part").write_bytes(b"video")
+    os.utime(temporary, (1000, 1000))
+
+    cleanup_expired_storage(
+        tmp_path,
+        now=5000,
+        ttl_seconds=3600,
+        temporary_grace_seconds=7200,
+        active_paths=set(),
+    )
+    assert temporary.exists()
+
+    cleanup_expired_storage(
+        tmp_path,
+        now=9000,
+        ttl_seconds=3600,
+        temporary_grace_seconds=7200,
+        active_paths=set(),
+    )
+    assert not temporary.exists()
+
+
 def test_cleanup_never_deletes_outside_storage(tmp_path: Path) -> None:
     storage = tmp_path / "storage"
     storage.mkdir()

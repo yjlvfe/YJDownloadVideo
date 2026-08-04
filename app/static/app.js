@@ -69,16 +69,15 @@ $('#inspect').onclick = async () => {
   }
 };
 
-function downloadReadyFile(url, title = 'video') {
+function downloadReadyFile(url) {
   if (!url) throw new Error('رابط الملف غير متاح');
   setProgress('الملف جاهز، جارٍ بدء التنزيل المباشر…', 96);
 
-  // Never read a potentially 2GB file into browser memory as a Blob. Render
-  // returns Content-Disposition, so a direct navigation lets the browser stream
-  // the response to disk with normal resume/network behavior.
+  // Never read a potentially 2GB file into browser memory as a Blob. Do not
+  // override the filename or extension: Render's Content-Disposition reflects
+  // the actual output (MP4, M4A, MP3, WebM, etc.).
   const link = document.createElement('a');
   link.href = url;
-  link.download = `${String(title).replace(/[\\/:*?"<>|]/g, '_').slice(0, 100) || 'video'}.mp4`;
   link.rel = 'noopener';
   document.body.appendChild(link);
   link.click();
@@ -108,7 +107,7 @@ $('#download').onclick = async () => {
     clearInterval(clock);
 
     if (data.status === 'ready' && data.download_url) {
-      downloadReadyFile(data.download_url, data.title || $('#title').textContent);
+      downloadReadyFile(data.download_url);
       $('#download').disabled = false;
       return;
     }
@@ -142,7 +141,7 @@ async function poll() {
     $('#status').textContent = statusText;
 
     if (data.status === 'ready') {
-      downloadReadyFile(data.download_url, data.title || $('#title').textContent);
+      downloadReadyFile(data.download_url);
       $('#download').disabled = false;
       return;
     }

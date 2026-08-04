@@ -1,0 +1,44 @@
+name: Repair Innertube Runner
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/repair-innertube-runner-trigger
+
+permissions:
+  contents: write
+
+jobs:
+  repair-runner:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Remove premature npm cache and retrigger
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('.github/workflows/direct-innertube-repair.yml')
+          text = path.read_text(encoding='utf-8')
+          old = '        with:\n          node-version: "24"\n          cache: npm\n'
+          new = '        with:\n          node-version: "24"\n'
+          if text.count(old) != 1:
+              raise SystemExit(f'node cache block matches={text.count(old)}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          rm -f .github/repair-innertube-runner-trigger
+          rm -f .github/workflows/repair-innertube-runner.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: initialize Innertube runner without premature cache"
+          git push origin HEAD:main
+          echo "retry-$(date +%s)" > .github/direct-innertube-repair-trigger
+          git add .github/direct-innertube-repair-trigger
+          git commit -m "chore: retry direct local Innertube repair"
+          git push origin HEAD:main

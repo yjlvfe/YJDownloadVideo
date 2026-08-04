@@ -20,7 +20,10 @@ def test_normalize_qualities_returns_only_real_unique_heights():
     qualities = normalize_qualities(formats)
 
     assert [item.key for item in qualities] == ["360", "720"]
-    assert qualities[1].selector == "bestvideo[height<=720]+bestaudio/best[height<=720]"
+    assert qualities[1].selector == (
+        "bestvideo[height=720]+bestaudio/best[height=720]/"
+        "bestvideo[height<=720]+bestaudio/best[height<=720]"
+    )
     assert qualities[1].size == 30
 
 

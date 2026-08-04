@@ -5,7 +5,7 @@ def test_runtime_config_keeps_vercel_thin_and_points_to_render():
     source = Path("app/config.py").read_text(encoding="utf-8")
 
     assert 'remote_worker_url: str = DEFAULT_REMOTE_WORKER_URL' in source
-    assert 'file_ttl_seconds: int = 0' in source
+    assert 'file_ttl_seconds: int = 3600' in source
     assert 'max_file_size_bytes: int = 2_000_000_000' in source
     assert 'telegram_send_limit_bytes: int = 2_000_000_000' in source
     assert 'runtime_root = Path("/tmp/yjdownload")' in source

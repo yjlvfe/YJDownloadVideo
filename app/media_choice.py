@@ -17,6 +17,99 @@ class QualityOption:
     size: int | None = None
 
 
+def _bounded_video_selector(height: int) -> str:
+    # The advertised height is selected exactly first. The bounded alternatives
+    # are used only if the source changes between inspection and download.
+    return (
+        f"bestvideo[height={height}]+bestaudio/"
+        f"best[height={height}]/"
+        f"bestvideo[height<={height}]+bestaudio/"
+        f"best[height<={height}]"
+    )
+
+
+_QUALITY_REGISTRY: tuple[QualityOption, ...] = (
+    QualityOption(
+        key="best",
+        label="⭐ الأفضل",
+        selector="bestvideo*+bestaudio/best",
+    ),
+    QualityOption(
+        key="1080",
+        label="1080p",
+        selector=_bounded_video_selector(1080),
+    ),
+    QualityOption(
+        key="720",
+        label="720p",
+        selector=_bounded_video_selector(720),
+    ),
+    QualityOption(
+        key="480",
+        label="480p",
+        selector=_bounded_video_selector(480),
+    ),
+    QualityOption(
+        key="audio",
+        label="🎧 صوت MP3",
+        selector="bestaudio/best",
+    ),
+)
+_QUALITY_BY_KEY = {item.key: item for item in _QUALITY_REGISTRY}
+_QUALITY_KEY_BY_SELECTOR = {item.selector: item.key for item in _QUALITY_REGISTRY}
+_DYNAMIC_SELECTOR_RE = re.compile(
+    r"^bestvideo\[height=(\d{2,4})\]\+bestaudio/"
+    r"best\[height=\1\]/bestvideo\[height<=\1\]\+bestaudio/"
+    r"best\[height<=\1\]$"
+)
+
+
+def quality_options(*, include_audio: bool = False) -> list[QualityOption]:
+    return [
+        item
+        for item in _QUALITY_REGISTRY
+        if include_audio or item.key != "audio"
+    ]
+
+
+def selector_for_quality(key: str) -> str:
+    normalized = str(key or "").strip().lower()
+    option = _QUALITY_BY_KEY.get(normalized)
+    if option is not None:
+        return option.selector
+    if normalized == "original":
+        return _QUALITY_BY_KEY["best"].selector
+    if normalized.isdigit():
+        height = int(normalized)
+        if 144 <= height <= 1080:
+            return _bounded_video_selector(height)
+    raise ValueError("unknown quality")
+
+
+def quality_key_for_selector(selector: str) -> str | None:
+    normalized = str(selector or "")
+    static = _QUALITY_KEY_BY_SELECTOR.get(normalized)
+    if static is not None:
+        return static
+    match = _DYNAMIC_SELECTOR_RE.fullmatch(normalized)
+    if match:
+        height = int(match.group(1))
+        if 144 <= height <= 1080:
+            return str(height)
+    return None
+
+
+def is_quality_key(key: str, *, include_audio: bool = False) -> bool:
+    normalized = str(key or "").strip().lower()
+    if normalized in {
+        item.key for item in quality_options(include_audio=include_audio)
+    }:
+        return True
+    if normalized == "original":
+        return True
+    return normalized.isdigit() and 144 <= int(normalized) <= 1080
+
+
 def _height_of(item: dict[str, Any]) -> int | None:
     raw = item.get("height")
     if isinstance(raw, (int, float)) and raw > 0:
@@ -32,17 +125,14 @@ def normalize_qualities(raw_formats: list[dict[str, Any]] | None) -> list[Qualit
         if item.get("vcodec") == "none":
             continue
         height = _height_of(item)
-        if not height:
+        if not height or not 144 <= height <= 1080:
             continue
         size = item.get("filesize") or item.get("filesize_approx") or item.get("size")
         size = int(size) if isinstance(size, (int, float)) and size > 0 else None
         candidate = QualityOption(
             key=str(height),
             label=f"{height}p",
-            selector=(
-                f"bestvideo[height<={height}]+bestaudio/"
-                f"best[height<={height}]"
-            ),
+            selector=_bounded_video_selector(height),
             size=size,
         )
         previous = by_height.get(height)
@@ -54,7 +144,7 @@ def normalize_qualities(raw_formats: list[dict[str, Any]] | None) -> list[Qualit
             QualityOption(
                 key="original",
                 label="الجودة الأصلية",
-                selector="bestvideo*+bestaudio/best",
+                selector=selector_for_quality("best"),
                 size=None,
             )
         ]

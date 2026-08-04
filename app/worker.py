@@ -1,37 +1,64 @@
-import os, sys, time, subprocess
+from __future__ import annotations
+
 from datetime import timedelta
 from pathlib import Path
+
 from .config import settings
-from .db import SessionLocal, Job, utcnow
-from .security import make_token
+from .db import Job, SessionLocal, utcnow
 from .extractor import UniversalExtractor
+from .redaction import sanitize_external_error
+from .security import make_token
 from .status import write_status
 
-def _owner_cookies(owner_key: str) -> str | None:
-    """ملف كوكيز خاص بالمستخدم إن وُجد (من البوت: data/cookies/<owner_key>.txt)."""
-    p = settings.cookies_path / f"{owner_key}.txt"
-    return str(p) if p.is_file() else None
 
-def process_job(job_id):
-    with SessionLocal() as db:
-        job=db.get(Job,job_id)
-        if not job: return
-        job.status='downloading'; db.commit()
+def _owner_cookies(owner_key: str) -> str | None:
+    """Return a per-user cookie file when one exists."""
+    path = settings.cookies_path / f"{owner_key}.txt"
+    return str(path) if path.is_file() else None
+
+
+def _safe_failure(exc: BaseException) -> str:
+    return sanitize_external_error(
+        exc,
+        secrets_to_hide=(
+            settings.telegram_bot_token,
+            settings.telegram_api_hash,
+            settings.worker_shared_secret,
+            settings.admin_api_token,
+            settings.youtube_proxy_url,
+        ),
+        limit=500,
+    )
+
+
+def process_job(job_id: str) -> None:
+    with SessionLocal() as database:
+        job = database.get(Job, job_id)
+        if not job:
+            return
+        job.status = "downloading"
+        database.commit()
         owner_key = job.owner_key or ""
-    outdir=settings.storage_path / job_id; outdir.mkdir(exist_ok=True)
+
+    outdir = settings.storage_path / job_id
+    outdir.mkdir(exist_ok=True)
     write_status(job_id, "downloading", 0)
-    def hook(d):
-        if d['status']=='downloading':
-            with SessionLocal() as db:
-                j=db.get(Job,job_id)
-                if j: j.status='downloading'; db.commit()
-            total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
-            done = d.get('downloaded_bytes') or 0
-            pct = int(done / total * 100) if total else 0
-            write_status(job_id, "downloading", pct, size=done)
-        elif d['status'] in ('finished', 'post-processing'):
+
+    def hook(data: dict) -> None:
+        if data.get("status") == "downloading":
+            with SessionLocal() as database:
+                current = database.get(Job, job_id)
+                if current:
+                    current.status = "downloading"
+                    database.commit()
+            total = data.get("total_bytes") or data.get("total_bytes_estimate") or 0
+            done = data.get("downloaded_bytes") or 0
+            percent = int(done / total * 100) if total else 0
+            write_status(job_id, "downloading", percent, size=done)
+        elif data.get("status") in {"finished", "post-processing"}:
             write_status(job_id, "preparing", 100)
-    ex = UniversalExtractor(
+
+    extractor = UniversalExtractor(
         cookies_file=_owner_cookies(owner_key),
         use_browser=settings.enable_browser_capture and not settings.vercel_mode,
         progress_hook=hook,
@@ -41,33 +68,50 @@ def process_job(job_id):
         request_timeout=settings.request_timeout_seconds,
     )
     try:
-        res = ex.download(job.url, outdir, preferred=job.requested_format or 'best')
-        file=Path(res['path'])
-        if not file.exists(): raise ValueError('لم يتم إنشاء الملف')
-        write_status(job_id, "done", 100, size=file.stat().st_size)
-        with SessionLocal() as db:
-            j=db.get(Job,job_id)
-            j.title=res.get('title') or j.title
-            j.thumbnail=res.get('thumbnail')
-            j.duration=res.get('duration')
-            j.file_size=file.stat().st_size
-            j.file_path=str(file)
-            j.status='ready'
-            j.download_token=make_token(job_id)
-            j.expires_at=utcnow()+timedelta(seconds=settings.file_ttl_seconds)
-            db.commit()
-    except Exception as e:
-        write_status(job_id, "failed", message=str(e)[:300])
-        with SessionLocal() as db:
-            j=db.get(Job,job_id)
-            if j: j.status='failed'; j.error=str(e)[:500]; db.commit()
+        result = extractor.download(
+            job.url,
+            outdir,
+            preferred=job.requested_format or "best",
+        )
+        media_file = Path(result["path"])
+        if not media_file.exists():
+            raise ValueError("لم يتم إنشاء الملف")
+        write_status(job_id, "done", 100, size=media_file.stat().st_size)
+        with SessionLocal() as database:
+            current = database.get(Job, job_id)
+            if current is None:
+                return
+            current.title = result.get("title") or current.title
+            current.thumbnail = result.get("thumbnail")
+            current.duration = result.get("duration")
+            current.file_size = media_file.stat().st_size
+            current.file_path = str(media_file)
+            current.status = "ready"
+            current.download_token = make_token(job_id)
+            current.expires_at = utcnow() + timedelta(seconds=settings.file_ttl_seconds)
+            database.commit()
+    except Exception as exc:  # noqa: BLE001
+        safe = _safe_failure(exc)
+        write_status(job_id, "failed", message=safe[:300])
+        with SessionLocal() as database:
+            current = database.get(Job, job_id)
+            if current:
+                current.status = "failed"
+                current.error = safe
+                database.commit()
     finally:
-        ex.cleanup()
+        extractor.cleanup()
 
-def main():
+
+def main() -> None:
     import redis
-    r=redis.Redis.from_url(settings.redis_url)
+
+    client = redis.Redis.from_url(settings.redis_url)
     while True:
-        item=r.blpop('yjdownload:jobs',timeout=5)
-        if item: process_job(item[1].decode())
-if __name__=='__main__': main()
+        item = client.blpop("yjdownload:jobs", timeout=5)
+        if item:
+            process_job(item[1].decode())
+
+
+if __name__ == "__main__":
+    main()

@@ -69,30 +69,20 @@ $('#inspect').onclick = async () => {
   }
 };
 
-async function downloadReadyFile(url, title = 'video') {
-  let lastError = new Error('الملف غير متاح');
-  for (let attempt = 1; attempt <= 4; attempt += 1) {
-    setProgress(`الملف جاهز، جارٍ بدء التنزيل… (${attempt}/4)`, 96);
-    try {
-      const response = await fetch(url, { cache: 'no-store' });
-      if (!response.ok) throw new Error(`تعذر جلب الملف (${response.status})`);
-      const blob = await response.blob();
-      const objectUrl = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = objectUrl;
-      link.download = `${String(title).replace(/[\\/:*?"<>|]/g, '_').slice(0, 100) || 'video'}.mp4`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
-      resetProgress();
-      return;
-    } catch (error) {
-      lastError = error;
-      await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
-    }
-  }
-  throw lastError;
+function downloadReadyFile(url) {
+  if (!url) throw new Error('رابط الملف غير متاح');
+  setProgress('الملف جاهز، جارٍ بدء التنزيل المباشر…', 96);
+
+  // Never read a potentially 2GB file into browser memory as a Blob. Do not
+  // override the filename or extension: Render's Content-Disposition reflects
+  // the actual output (MP4, M4A, MP3, WebM, etc.).
+  const link = document.createElement('a');
+  link.href = url;
+  link.rel = 'noopener';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(resetProgress, 1200);
 }
 
 $('#download').onclick = async () => {
@@ -117,7 +107,7 @@ $('#download').onclick = async () => {
     clearInterval(clock);
 
     if (data.status === 'ready' && data.download_url) {
-      await downloadReadyFile(data.download_url, data.title || $('#title').textContent);
+      downloadReadyFile(data.download_url);
       $('#download').disabled = false;
       return;
     }
@@ -151,7 +141,7 @@ async function poll() {
     $('#status').textContent = statusText;
 
     if (data.status === 'ready') {
-      await downloadReadyFile(data.download_url, data.title || $('#title').textContent);
+      downloadReadyFile(data.download_url);
       $('#download').disabled = false;
       return;
     }

@@ -111,6 +111,7 @@ def _bounded_inspect_local(url: str) -> dict[str, Any]:
 # inspection path has the same process isolation and timeout.
 main_module._inspect_local = _bounded_inspect_local
 from . import live_acceptance_probe as _live_acceptance_probe  # noqa: F401,E402
+from . import youtube_admin_routes as _youtube_admin_routes  # noqa: F401,E402
 
 
 def media_response_metadata(path: str | Path, title: str) -> tuple[str, str]:

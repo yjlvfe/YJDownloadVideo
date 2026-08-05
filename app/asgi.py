@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 
 from . import main as main_module
 from . import pot_runtime_patch as _pot_runtime_patch  # noqa: F401
+from . import network_runtime_patch as _network_runtime_patch  # noqa: F401
 from .config import settings
 from .db import Job, SessionLocal
 from .durable_runtime import get_job_queue

@@ -16,6 +16,18 @@ def _target() -> Path:
     return settings.cookies_path / _TARGET_NAME
 
 
+def _environment_cookie_configured() -> bool:
+    return any(
+        os.getenv(name, "").strip()
+        for name in (
+            "YOUTUBE_COOKIES_FILE",
+            "YOUTUBE_COOKIES_B64",
+            "YTDLP_COOKIES_FILE",
+            "YTDLP_COOKIES_B64",
+        )
+    )
+
+
 def _parse_cookie_payload(payload: bytes) -> tuple[bytes, int, bool]:
     if not isinstance(payload, (bytes, bytearray)):
         raise ValueError("ملف Cookies غير صالح")
@@ -80,7 +92,10 @@ def remove_uploaded_youtube_cookies() -> dict[str, Any]:
     removed = target.is_file()
     if removed:
         target.unlink()
-    return {"removed": removed, "configured": bool(cookie_file_for_url("https://youtube.com"))}
+    return {
+        "removed": removed,
+        "configured": _environment_cookie_configured(),
+    }
 
 
 def youtube_cookie_status() -> dict[str, Any]:

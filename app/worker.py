@@ -5,8 +5,10 @@ from datetime import timedelta
 from pathlib import Path
 from queue import Empty
 from typing import Any
+from urllib.parse import urlparse
 
-from .config import settings
+from . import pot_runtime_patch as _pot_runtime_patch  # noqa: F401
+from .config import cookie_file_for_url, settings
 from .db import Job, SessionLocal, utcnow
 from .redaction import sanitize_external_error
 from .security import make_token
@@ -16,6 +18,23 @@ from .status import write_status
 def _owner_cookies(owner_key: str) -> str | None:
     path = settings.cookies_path / f"{owner_key}.txt"
     return str(path) if path.is_file() else None
+
+
+def _cookie_file_for_job(owner_key: str, url: str) -> str | None:
+    """Prefer a user's cookie file, then a platform/global secret file."""
+    return _owner_cookies(owner_key) or cookie_file_for_url(url)
+
+
+def _is_youtube_url(url: str) -> bool:
+    host = (urlparse(str(url or "")).hostname or "").lower()
+    return host == "youtu.be" or host.endswith("youtube.com")
+
+
+def _proxy_for_job(url: str) -> str:
+    """Only route YouTube through its configured proxy; other sites stay unchanged."""
+    if not _is_youtube_url(url):
+        return ""
+    return str(settings.youtube_proxy_url or "").strip()
 
 
 def _safe_failure(exc: BaseException) -> str:
@@ -62,7 +81,8 @@ def _extract_in_child(job_id: str, result_queue: Any) -> None:
             write_status(job_id, "preparing", 100)
 
     extractor = UniversalExtractor(
-        cookies_file=_owner_cookies(owner_key),
+        cookies_file=_cookie_file_for_job(owner_key, url),
+        proxy_url=_proxy_for_job(url),
         use_browser=settings.enable_browser_capture and not settings.vercel_mode,
         progress_hook=hook,
         max_filesize=settings.max_file_size_bytes,

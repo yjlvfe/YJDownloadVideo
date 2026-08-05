@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from . import pot_runtime_patch as _pot_runtime_patch  # noqa: F401
+from . import network_runtime_patch as _network_runtime_patch  # noqa: F401
 from .config import cookie_file_for_url, settings
 from .db import Job, SessionLocal, utcnow
 from .redaction import sanitize_external_error

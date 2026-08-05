@@ -28,7 +28,7 @@ def test_ytdlp_options_use_registry_and_bounded_retries(monkeypatch: pytest.Monk
     assert opts["fragment_retries"] == 1
     assert opts["proxy"] == "http://proxy.example:8080"
     youtube_args = opts.get("extractor_args", {}).get("youtube", {})
-    assert youtube_args.get("player_client") == ["default", "mweb"]
+    assert youtube_args.get("player_client") == ["mweb"]
     assert youtube_args.get("fetch_pot") == ["always"]
     assert opts.get("extractor_args", {}).get("youtubepot-bgutilhttp", {}).get("base_url") == [
         "http://127.0.0.1:4416"

@@ -116,14 +116,6 @@ def _patched_ytdlp_info(self: UniversalExtractor, url: str) -> dict[str, Any]:
         "extractor_args": pot_patch._provider_extractor_args(),
         "js_runtimes": {"node": {}},
     }
-    if pot_patch._is_shorts_url(url):
-        options["extractor_args"] = {
-            "youtube": {
-                "player_client": ["web_safari", "web_embedded", "android_vr"],
-                "fetch_pot": ["never"],
-                "player_skip": ["webpage", "configs"],
-            }
-        }
     if cookies_file:
         options["cookiefile"] = cookies_file
     if proxy:
@@ -170,3 +162,7 @@ def install() -> None:
 
 
 install()
+
+# Install the YouTube client strategy only after the generic network layer is
+# fully defined, so it can safely reuse proxy and cookie handling.
+from . import youtube_strategy_runtime as _youtube_strategy_runtime  # noqa: E402,F401

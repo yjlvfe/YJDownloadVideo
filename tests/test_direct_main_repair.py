@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import app.extractor as extractor_module
 import app.pot_runtime_patch as pot_patch
+import app.youtube_strategy_runtime as strategy_module
 from app.extractor import DownloadError, MediaCandidate, UniversalExtractor, _browser_capture_url, _hint_height
 from app.platform_runtime import _trusted_googlevideo_candidate
 from scripts.acceptance_media import absolute_download_url
@@ -41,7 +42,7 @@ def test_googlevideo_requires_live_browser_capture_not_cookie_file():
     assert _trusted_googlevideo_candidate(untrusted) is False
 
 
-def test_youtube_download_continues_to_browser_after_ytdlp_block(monkeypatch, tmp_path):
+def test_youtube_download_continues_to_browser_when_credentials_exist(monkeypatch, tmp_path):
     media_path = tmp_path / "captured.mp4"
     media_path.write_bytes(b"media")
     candidate = MediaCandidate(
@@ -50,7 +51,10 @@ def test_youtube_download_continues_to_browser_after_ytdlp_block(monkeypatch, tm
         "cdp",
         cookies_file="/tmp/browser-cookies.txt",
     )
-    extractor = UniversalExtractor(use_browser=False)
+    extractor = UniversalExtractor(
+        use_browser=True,
+        cookies_file="/tmp/youtube-cookies.txt",
+    )
 
     monkeypatch.setattr(
         extractor,
@@ -58,14 +62,14 @@ def test_youtube_download_continues_to_browser_after_ytdlp_block(monkeypatch, tm
         lambda *args, **kwargs: (_ for _ in ()).throw(DownloadError("youtube_circuit_open")),
     )
     monkeypatch.setattr(
+        strategy_module,
+        "_download_youtube_lightweight",
+        lambda *args, **kwargs: (_ for _ in ()).throw(DownloadError("lightweight unavailable")),
+    )
+    monkeypatch.setattr(
         pot_patch,
         "_download_youtube_with_wpc",
         lambda *args, **kwargs: (_ for _ in ()).throw(DownloadError("wpc unavailable")),
-    )
-    monkeypatch.setattr(
-        extractor,
-        "_download_yt_fallback",
-        lambda *args, **kwargs: (_ for _ in ()).throw(DownloadError("fallback disabled")),
     )
     monkeypatch.setattr(
         extractor,

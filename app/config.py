@@ -77,8 +77,13 @@ class Settings(BaseSettings):
             if self.telegram_bot_token:
                 material = f"yjdownload-signing-v1\0{self.telegram_bot_token}"
                 self.secret_key = hashlib.sha256(material.encode("utf-8")).hexdigest()
+            elif self.worker_shared_secret:
+                material = f"yjdownload-worker-signing-v1\0{self.worker_shared_secret}"
+                self.secret_key = hashlib.sha256(material.encode("utf-8")).hexdigest()
             elif deployed or self.environment.strip().lower() in {"production", "prod"}:
-                raise ValueError("SECRET_KEY or TELEGRAM_BOT_TOKEN must be configured in production")
+                raise ValueError(
+                    "SECRET_KEY, WORKER_SHARED_SECRET, or TELEGRAM_BOT_TOKEN must be configured in production"
+                )
 
         if not VERCEL_RUNTIME:
             return

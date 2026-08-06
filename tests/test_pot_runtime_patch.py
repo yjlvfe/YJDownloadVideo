@@ -71,6 +71,23 @@ def test_extractor_accepts_proxy_and_wires_cookie_proxy_and_provider(tmp_path: P
     assert "height<=720" in options["format"]
 
 
+def test_default_youtube_options_do_not_force_player_client(tmp_path: Path):
+    extractor = UniversalExtractor(
+        cookies_file="/run/secrets/youtube-cookies.txt",
+        proxy_url="http://proxy.example:8080",
+        use_browser=False,
+    )
+    extractor._runtime_url = "https://www.youtube.com/watch?v=kTRs4ycFp_o"
+
+    options = youtube_runtime._default_youtube_options(extractor, tmp_path, "2160")
+
+    assert "extractor_args" not in options
+    assert options["cookiefile"] == "/run/secrets/youtube-cookies.txt"
+    assert options["proxy"] == "http://proxy.example:8080"
+    assert options["js_runtimes"] == {"node": {}}
+    assert "height=2160" in options["format"]
+
+
 def test_transient_operation_retries_twice_then_succeeds():
     attempts: list[int] = []
     sleeps: list[float] = []
@@ -88,7 +105,7 @@ def test_transient_operation_retries_twice_then_succeeds():
     assert sleeps == [1.0, 2.0]
 
 
-def test_youtube_download_uses_only_primary_then_one_fallback(monkeypatch, tmp_path: Path):
+def test_youtube_download_uses_default_then_provider_then_one_fallback(monkeypatch, tmp_path: Path):
     extractor = UniversalExtractor(use_browser=False)
     output = tmp_path / "video.mp4"
     output.write_bytes(b"media")
@@ -96,6 +113,8 @@ def test_youtube_download_uses_only_primary_then_one_fallback(monkeypatch, tmp_p
 
     def fake_attempt(self, url, outdir, preferred, mode):
         attempts.append(mode)
+        if mode == "default":
+            raise DownloadError("youtube_transient")
         if mode == "primary":
             raise DownloadError("youtube_fragment_forbidden")
         return {
@@ -111,7 +130,31 @@ def test_youtube_download_uses_only_primary_then_one_fallback(monkeypatch, tmp_p
     result = extractor.download("https://youtu.be/kTRs4ycFp_o", tmp_path, "best")
 
     assert result["path"] == str(output)
-    assert attempts == ["primary", "fallback"]
+    assert attempts == ["default", "primary", "fallback"]
+
+
+def test_successful_default_youtube_download_skips_fallbacks(monkeypatch, tmp_path: Path):
+    extractor = UniversalExtractor(use_browser=False)
+    output = tmp_path / "video.mp4"
+    output.write_bytes(b"media")
+    attempts: list[str] = []
+
+    def fake_attempt(self, url, outdir, preferred, mode):
+        attempts.append(mode)
+        return {
+            "path": str(output),
+            "title": "sample",
+            "duration": 10,
+            "thumbnail": "",
+            "ext": "mp4",
+        }
+
+    monkeypatch.setattr(youtube_runtime, "_download_youtube_attempt", fake_attempt)
+
+    result = extractor.download("https://youtu.be/kTRs4ycFp_o", tmp_path, "best")
+
+    assert result["path"] == str(output)
+    assert attempts == ["default"]
 
 
 def test_rate_limit_does_not_trigger_fallback_storm(monkeypatch, tmp_path: Path):
@@ -127,7 +170,7 @@ def test_rate_limit_does_not_trigger_fallback_storm(monkeypatch, tmp_path: Path)
     with pytest.raises(DownloadError, match="youtube_rate_limited"):
         extractor.download("https://youtu.be/kTRs4ycFp_o", tmp_path, "best")
 
-    assert attempts == ["primary"]
+    assert attempts == ["default"]
 
 
 def test_youtube_urls_are_canonicalized():

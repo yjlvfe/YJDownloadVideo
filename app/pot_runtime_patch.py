@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 from . import extractor as extractor_module
 from .config import cookie_file_for_url, settings
 from .extractor import DownloadError, UniversalExtractor, _ytdlp_headers
+from .media_choice import is_quality_key, quality_key_for_selector, selector_for_quality
 from .youtube_policy import (
     BOT_CHECK,
     LOGIN_REQUIRED,
@@ -66,9 +67,6 @@ def _provider_extractor_args(
         "use_ad_playback_context": ["true"],
     }
     if authenticated:
-        # With account cookies yt-dlp must fetch the webpage/configs so it can
-        # discover the account Data Sync ID. Skipping them causes opaque
-        # transient failures and missing GVS PO tokens.
         pass
     else:
         youtube["player_skip"] = ["webpage", "configs"]
@@ -115,10 +113,17 @@ def _patched_init(
     self.proxy_url = str(proxy_url or "").strip()
 
 
+def _quality_key(preferred: str) -> str:
+    value = str(preferred or "best").strip().lower()
+    if is_quality_key(value, include_audio=True):
+        return value
+    return quality_key_for_selector(value) or value
+
+
 def _youtube_format(preferred: str, mode: str) -> str | None:
     if mode != "fallback":
         return None
-    value = str(preferred or "best").strip().lower()
+    value = _quality_key(preferred)
     if value == "audio":
         return "bestaudio/best"
     if value.isdigit():
@@ -127,14 +132,10 @@ def _youtube_format(preferred: str, mode: str) -> str | None:
     return "best[protocol^=m3u8]/best"
 
 
-def _youtube_options(
+def _apply_runtime_access(
     self: UniversalExtractor,
-    outdir: Path | str,
-    preferred: str,
-    mode: str,
+    options: dict[str, Any],
 ) -> dict[str, Any]:
-    options = _ORIGINAL_BASE_OPTIONS(self, outdir, preferred)
-
     cookie = self.cookies_file or cookie_file_for_url(
         str(getattr(self, "_runtime_url", "") or "")
     )
@@ -142,11 +143,10 @@ def _youtube_options(
         self.cookies_file = cookie
         options["cookiefile"] = cookie
 
-    options["extractor_args"] = (
-        _provider_extractor_args(authenticated=bool(cookie))
-        if mode == "primary"
-        else _fallback_extractor_args()
-    )
+    proxy = str(getattr(self, "proxy_url", "") or "").strip()
+    if proxy:
+        options["proxy"] = proxy
+
     options["js_runtimes"] = {"node": {}}
     options["retries"] = 1
     options["fragment_retries"] = 1
@@ -154,10 +154,44 @@ def _youtube_options(
     options["socket_timeout"] = max(20, int(self.request_timeout))
     options["no_warnings"] = False
     options["http_headers"] = _ytdlp_headers()
+    return options
 
-    proxy = str(getattr(self, "proxy_url", "") or "").strip()
-    if proxy:
-        options["proxy"] = proxy
+
+def _default_youtube_options(
+    self: UniversalExtractor,
+    outdir: Path | str,
+    preferred: str,
+) -> dict[str, Any]:
+    options = _ORIGINAL_BASE_OPTIONS(self, outdir, preferred)
+    options.pop("extractor_args", None)
+    quality = _quality_key(preferred)
+    if is_quality_key(quality, include_audio=True):
+        options["format"] = selector_for_quality(quality)
+        if quality == "audio":
+            options["merge_output_format"] = "m4a"
+    return _apply_runtime_access(self, options)
+
+
+def _youtube_options(
+    self: UniversalExtractor,
+    outdir: Path | str,
+    preferred: str,
+    mode: str,
+) -> dict[str, Any]:
+    if mode == "default":
+        return _default_youtube_options(self, outdir, preferred)
+
+    options = _ORIGINAL_BASE_OPTIONS(self, outdir, preferred)
+    options["extractor_args"] = (
+        _provider_extractor_args(authenticated=bool(
+            self.cookies_file or cookie_file_for_url(
+                str(getattr(self, "_runtime_url", "") or "")
+            )
+        ))
+        if mode == "primary"
+        else _fallback_extractor_args()
+    )
+    options = _apply_runtime_access(self, options)
 
     fallback_format = _youtube_format(preferred, mode)
     if fallback_format:
@@ -233,7 +267,7 @@ def _download_youtube_attempt(
         raise DownloadError("youtube_no_media_file")
     if not extractor_module._has_audio(path):
         raise DownloadError("youtube_output_without_audio")
-    if preferred != "audio" and not extractor_module._has_video(path):
+    if _quality_key(preferred) != "audio" and not extractor_module._has_video(path):
         raise DownloadError("youtube_output_without_video")
     if self.max_duration and info.get("duration") and info["duration"] > self.max_duration:
         raise DownloadError("مدة الفيديو تتجاوز الحد المسموح")
@@ -250,6 +284,10 @@ def _download_youtube_attempt(
 
 def _terminal_without_fallback(classification: str) -> bool:
     return classification in {RATE_LIMITED, BOT_CHECK, LOGIN_REQUIRED, "youtube_circuit_open"}
+
+
+def _terminal_default_failure(classification: str) -> bool:
+    return classification in {RATE_LIMITED, "youtube_circuit_open"}
 
 
 def _patched_download(
@@ -271,24 +309,43 @@ def _patched_download(
         self.cookies_file = cookie_file_for_url(canonical)
     try:
         try:
-            result = _download_youtube_attempt(self, canonical, Path(outdir), preferred, "primary")
-        except DownloadError as primary_error:
-            classification = classify_youtube_error(primary_error)
-            if _terminal_without_fallback(classification):
-                _CIRCUIT.record_failure(classification)
-                raise DownloadError(classification) from primary_error
+            result = _download_youtube_attempt(
+                self,
+                canonical,
+                Path(outdir),
+                preferred,
+                "default",
+            )
+        except DownloadError as default_error:
+            default_classification = classify_youtube_error(default_error)
+            if _terminal_default_failure(default_classification):
+                _CIRCUIT.record_failure(default_classification)
+                raise DownloadError(default_classification) from default_error
             try:
                 result = _download_youtube_attempt(
                     self,
                     canonical,
                     Path(outdir),
                     preferred,
-                    "fallback",
+                    "primary",
                 )
-            except DownloadError as fallback_error:
-                final_classification = classify_youtube_error(fallback_error)
-                _CIRCUIT.record_failure(final_classification)
-                raise DownloadError(final_classification) from fallback_error
+            except DownloadError as primary_error:
+                classification = classify_youtube_error(primary_error)
+                if _terminal_without_fallback(classification):
+                    _CIRCUIT.record_failure(classification)
+                    raise DownloadError(classification) from primary_error
+                try:
+                    result = _download_youtube_attempt(
+                        self,
+                        canonical,
+                        Path(outdir),
+                        preferred,
+                        "fallback",
+                    )
+                except DownloadError as fallback_error:
+                    final_classification = classify_youtube_error(fallback_error)
+                    _CIRCUIT.record_failure(final_classification)
+                    raise DownloadError(final_classification) from fallback_error
         _CIRCUIT.record_success()
         return result
     finally:
@@ -335,18 +392,25 @@ def _patched_ytdlp_info(self: UniversalExtractor, url: str) -> dict[str, Any]:
         self.cookies_file = cookie_file_for_url(canonical)
     try:
         try:
-            info = _extract_youtube_info(self, canonical, "primary")
-        except Exception as primary_error:  # noqa: BLE001
-            classification = classify_youtube_error(primary_error)
-            if _terminal_without_fallback(classification):
-                _CIRCUIT.record_failure(classification)
-                raise DownloadError(classification) from primary_error
+            info = _extract_youtube_info(self, canonical, "default")
+        except Exception as default_error:  # noqa: BLE001
+            default_classification = classify_youtube_error(default_error)
+            if _terminal_default_failure(default_classification):
+                _CIRCUIT.record_failure(default_classification)
+                raise DownloadError(default_classification) from default_error
             try:
-                info = _extract_youtube_info(self, canonical, "fallback")
-            except Exception as fallback_error:  # noqa: BLE001
-                final_classification = classify_youtube_error(fallback_error)
-                _CIRCUIT.record_failure(final_classification)
-                raise DownloadError(final_classification) from fallback_error
+                info = _extract_youtube_info(self, canonical, "primary")
+            except Exception as primary_error:  # noqa: BLE001
+                classification = classify_youtube_error(primary_error)
+                if _terminal_without_fallback(classification):
+                    _CIRCUIT.record_failure(classification)
+                    raise DownloadError(classification) from primary_error
+                try:
+                    info = _extract_youtube_info(self, canonical, "fallback")
+                except Exception as fallback_error:  # noqa: BLE001
+                    final_classification = classify_youtube_error(fallback_error)
+                    _CIRCUIT.record_failure(final_classification)
+                    raise DownloadError(final_classification) from fallback_error
         _CIRCUIT.record_success()
         return info
     finally:

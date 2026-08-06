@@ -3,10 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 import mimetypes
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, BinaryIO, Callable
 
 import httpx
+
+from .video_delivery import VideoUploadMetadata, prepare_video_upload
 
 
 ProgressCallback = Callable[[int, int], None]
@@ -53,9 +56,26 @@ class ProgressFile:
         return getattr(self.raw, name)
 
 
-def media_payload(kind: str, *, chat_id: int, title: str = "") -> dict[str, Any]:
+def media_payload(
+    kind: str,
+    *,
+    chat_id: int,
+    title: str = "",
+    video_metadata: VideoUploadMetadata | None = None,
+) -> dict[str, Any]:
     if kind == "video":
-        return {"chat_id": chat_id, "supports_streaming": "true"}
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "supports_streaming": "true",
+        }
+        metadata = video_metadata or VideoUploadMetadata()
+        if metadata.duration:
+            payload["duration"] = metadata.duration
+        if metadata.width:
+            payload["width"] = metadata.width
+        if metadata.height:
+            payload["height"] = metadata.height
+        return payload
     if kind == "audio":
         return {"chat_id": chat_id, "title": title[:64]}
     raise ValueError("unsupported media kind")
@@ -198,13 +218,29 @@ class TelegramAPI:
         *,
         progress: ProgressCallback | None = None,
     ) -> dict[str, Any]:
-        return await self._upload(
-            "sendVideo",
-            "video",
-            Path(path),
-            media_payload("video", chat_id=chat_id),
-            progress=progress,
+        media_path = Path(path)
+        metadata = await asyncio.to_thread(prepare_video_upload, media_path)
+        extra_files = (
+            {"thumbnail": metadata.thumbnail}
+            if metadata.thumbnail is not None
+            else None
         )
+        try:
+            return await self._upload(
+                "sendVideo",
+                "video",
+                media_path,
+                media_payload(
+                    "video",
+                    chat_id=chat_id,
+                    video_metadata=metadata,
+                ),
+                progress=progress,
+                extra_files=extra_files,
+            )
+        finally:
+            if metadata.thumbnail is not None:
+                metadata.thumbnail.unlink(missing_ok=True)
 
     async def send_audio_file(
         self,
@@ -230,9 +266,16 @@ class TelegramAPI:
         payload: dict[str, Any],
         *,
         progress: ProgressCallback | None = None,
+        extra_files: dict[str, Path] | None = None,
     ) -> dict[str, Any]:
         if not path.is_file():
             raise TelegramAPIError("Media file is missing")
+
+        attachments = {
+            name: Path(value)
+            for name, value in (extra_files or {}).items()
+            if Path(value).is_file()
+        }
 
         def run() -> dict[str, Any]:
             data: dict[str, str] = {}
@@ -243,15 +286,28 @@ class TelegramAPI:
                     data[key] = "true" if value else "false"
                 else:
                     data[key] = str(value)
-            mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-            with path.open("rb") as raw:
+
+            with ExitStack() as stack:
+                raw = stack.enter_context(path.open("rb"))
                 wrapped = ProgressFile(raw, total=path.stat().st_size, callback=progress)
+                mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+                files: dict[str, tuple[str, Any, str]] = {
+                    field: (path.name, wrapped, mime),
+                }
+                for name, attachment in attachments.items():
+                    handle = stack.enter_context(attachment.open("rb"))
+                    attachment_mime = (
+                        mimetypes.guess_type(attachment.name)[0]
+                        or "application/octet-stream"
+                    )
+                    files[name] = (attachment.name, handle, attachment_mime)
+
                 timeout = httpx.Timeout(self.timeout_seconds, connect=30.0)
                 with httpx.Client(timeout=timeout, trust_env=False) as client:
                     response = client.post(
                         self.endpoint(method),
                         data=data,
-                        files={field: (path.name, wrapped, mime)},
+                        files=files,
                     )
             return self._result(response)
 

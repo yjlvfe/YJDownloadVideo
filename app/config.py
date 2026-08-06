@@ -82,8 +82,6 @@ class Settings(BaseSettings):
                 material = f"yjdownload-worker-signing-v1\0{self.worker_shared_secret}"
                 self.secret_key = hashlib.sha256(material.encode("utf-8")).hexdigest()
             elif VERCEL_RUNTIME:
-                # Vercel is stateless UI only. Stateful API, downloads and Telegram
-                # webhook routes are externally rewritten to Render in vercel.json.
                 identity = (
                     os.getenv("VERCEL_PROJECT_ID")
                     or os.getenv("VERCEL_URL")
@@ -157,6 +155,15 @@ def ffmpeg_location() -> str:
         return imageio_ffmpeg.get_ffmpeg_exe()
     except Exception:  # noqa: BLE001
         return settings.ffmpeg_bin
+
+
+def ffprobe_location() -> str:
+    discovered = shutil.which("ffprobe")
+    if discovered:
+        return discovered
+    ffmpeg = Path(ffmpeg_location())
+    sibling = ffmpeg.with_name("ffprobe")
+    return str(sibling) if sibling.is_file() else "ffprobe"
 
 
 def javascript_runtime_options() -> dict:

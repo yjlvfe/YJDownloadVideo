@@ -16,10 +16,10 @@ def test_actual_video_qualities_include_best_then_only_available_heights() -> No
 
     qualities = actual_video_qualities(raw)
 
-    assert [item.key for item in qualities] == ["best", "720", "360"]
-    assert qualities[1].size == 4_000_000
+    assert [item.key for item in qualities] == ["best", "2160", "720", "360"]
+    assert qualities[1].size == 10_000_000
+    assert qualities[2].size == 4_000_000
     assert "1080" not in {item.key for item in qualities}
-    assert "2160" not in {item.key for item in qualities}
 
 
 def test_quality_payload_round_trip_is_json_safe() -> None:

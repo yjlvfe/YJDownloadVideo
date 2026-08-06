@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from .storage_leases import LEASE_DIRECTORY_NAME
+from .storage_leases import LEASE_DIRECTORY_NAME, StorageLeaseRegistry
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +66,7 @@ def cleanup_expired_storage(
     ttl_seconds: int,
     active_paths: Iterable[str | Path],
     temporary_grace_seconds: int = 8 * 60 * 60,
+    lease_stale_after_seconds: int = 15 * 60,
 ) -> CleanupResult:
     root_path = Path(root)
     root_path.mkdir(parents=True, exist_ok=True)
@@ -74,6 +75,13 @@ def cleanup_expired_storage(
         for path in active_paths
         if _contained(root_path, Path(path))
     }
+    registry = StorageLeaseRegistry(
+        root_path,
+        stale_after_seconds=lease_stale_after_seconds,
+    )
+    active.update(registry.active_paths(now=now))
+    registry.clear_stale(now=now)
+
     removed_count = 0
     removed_bytes = 0
     ttl = max(0, int(ttl_seconds))

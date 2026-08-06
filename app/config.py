@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     storage_dir: str = "./storage"
     file_ttl_seconds: int = 3600
     max_file_size_bytes: int = 2_000_000_000
-    max_duration_seconds: int = 7200
+    max_duration_seconds: int = 0
     rate_limit_per_minute: int = 10
     telegram_bot_token: str = Field(default="", repr=False)
     telegram_bot_api_base: str = ""

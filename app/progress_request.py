@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import time
 
 import httpx
 
@@ -23,7 +24,7 @@ from telegram.request import BaseRequest, HTTPXRequest
 
 
 class _ProgressReader(io.RawIOBase):
-    """يلف ملف الرفع: يحسب البايتات المقروءة ويستدعي callback عند كل 10%."""
+    """يلف ملف الرفع: يحسب البايتات المقروءة ويستدعي callback كل ثانية (تفاعلي حي)."""
 
     def __init__(self, fileobj, total: int, cb):
         super().__init__()
@@ -31,22 +32,27 @@ class _ProgressReader(io.RawIOBase):
         self._total = total or 0
         self._done = 0
         self._cb = cb
-        self._last_step = 0
+        self._last_time = 0.0   # وقت آخر تحديث (ثواني monotonic)
+        self._last_bytes = 0     # بايتات آخر تحديث (للحجم المجهول)
 
     def read(self, n: int = -1) -> bytes:
         data = self._f.read(n)
         self._done += len(data)
         if self._cb:
+            now = time.monotonic()
+            done = self._done >= self._total > 0
             if self._total:
-                step = self._done * 100 // self._total
-                if (step >= self._last_step + 10 or self._done >= self._total) and step > self._last_step:
-                    self._last_step = step
+                # تحديث كل ثانية (أو عند الإنهاء) — تقدم حي بدل كل 10%
+                if done or now - self._last_time >= 1.0:
+                    self._last_time = now
                     self._cb(self._done, self._total)
             else:
-                # حجم غير معروف: أبلغ بالبايتات المرسلة كل 10MB
-                mb10 = 10 * 1024 * 1024
-                if self._done - self._last_step >= mb10:
-                    self._last_step = self._done
+                # حجم غير معروف: أبلغ كل 5MB أو كل 3 ثوانٍ (أيهما أقرب)
+                mb5 = 5 * 1024 * 1024
+                if (self._done - self._last_bytes >= mb5
+                        or now - self._last_time >= 3.0):
+                    self._last_time = now
+                    self._last_bytes = self._done
                     self._cb(self._done, 0)
         return data
 

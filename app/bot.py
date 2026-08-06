@@ -420,12 +420,17 @@ def _bot_instance(progress_cb=None):
     return Bot(**kwargs)
 
 
-def _progress_bar(pct: int, width: int = 12) -> str:
-    """شريط تقدم نصي: [██████░░░░░░] 50%"""
+def _progress_bar(pct: int, width: int = 16) -> str:
+    """شريط تقدم نصي بتصميم احترافي: ▓▓▓▓▓▓▓░░░░░ 42%
+
+    ▓ = مكتمل | ░ = متبقي — ceil يضمن عدم ظهور الشريط فارغًا أبدًا.
+    العرض 16 حرف = مثالي لشاشات الجوال (لا ينكسر السطر)."""
     import math
     pct = max(0, min(100, int(pct)))
-    filled = math.ceil(pct / 100 * width)  # ceil: لا يظهر فارغًا حتى عند 95%+
-    return "█" * filled + "░" * (width - filled)
+    filled = math.ceil(pct / 100 * width)
+    if filled == 0 and pct > 0:
+        filled = 1  # لا يظهر فارغًا إن كان هناك أي تقدم
+    return "▓" * filled + "░" * (width - filled)
 
 
 def _video_meta(path, outdir) -> dict:
@@ -487,8 +492,8 @@ async def watch_and_deliver(chat_id: int, jid: str, status_msg=None, queue_pos: 
         if total:
             up_state["pct"] = int(current / total * 100)
         elif current:
-            # حجم غير معروف — نسبة تقريبية كل 10MB وصلت
-            up_state["pct"] = min(99, current // (10 * 1024 * 1024) * 5)
+            # حجم غير معروف — يُحدث كل 5MB من progress_request
+            up_state["pct"] = min(99, current // (5 * 1024 * 1024) * 5)
 
     bot = _bot_instance(progress_cb=sync_up_cb)
     try:
@@ -496,13 +501,13 @@ async def watch_and_deliver(chat_id: int, jid: str, status_msg=None, queue_pos: 
         if status_msg is not None:
             # نفس رسالة الأزرار تتحول لشريط الحالة
             bar = await _edit_progress(status_msg,
-                                       f"⏳ في الطابور — موضعك #{queue_pos}" if queue_pos > 1
-                                       else f"⬇️ جارٍ التحميل [{_progress_bar(0)}] 0%")
+                                       f"⏳ #‎{queue_pos} في الطابور" if queue_pos > 1
+                                       else f"⬇️ {_progress_bar(0)} 0% — جارٍ التحميل")
         if bar is None:
             try:
                 bar = await bot.send_message(chat_id,
-                                             f"⏳ في الطابور — موضعك #{queue_pos}" if queue_pos > 1
-                                             else f"⬇️ جارٍ التحميل [{_progress_bar(0)}] 0%")
+                                             f"⏳ #‎{queue_pos} في الطابور" if queue_pos > 1
+                                             else f"⬇️ {_progress_bar(0)} 0% — جارٍ التحميل")
             except Exception:  # noqa: BLE001
                 pass
 
@@ -513,14 +518,14 @@ async def watch_and_deliver(chat_id: int, jid: str, status_msg=None, queue_pos: 
                 j = db.get(Job, jid)
                 state = j.status if j else "failed"
             if state in ("waiting",):
-                text = f"⏳ في الطابور — موضعك #{queue_pos}"
+                text = f"⏳ #‎{queue_pos} في الطابور"
             elif state in ("downloading", "preparing"):
                 st = read_status(jid)
                 if st and st.get("stage") == "preparing":
-                    text = "🔧 جارٍ دمج الصوت والفيديو…"
+                    text = "🔧 جارٍ تجهيز المقطع..."
                 else:
                     pct = (st or {}).get("pct", 0)
-                    text = f"⬇️ جارٍ التحميل [{_progress_bar(pct)}] {pct}%"
+                    text = f"⬇️ {_progress_bar(pct)} {pct}% — جارٍ التحميل"
             else:
                 break
             if text != last_text and bar is not None:
@@ -547,7 +552,7 @@ async def watch_and_deliver(chat_id: int, jid: str, status_msg=None, queue_pos: 
             # ← مرحلة الرفع: نفس الرسالة تتحول لشريط رفع
             size_str = _fmt_mb(size)
             if bar is not None:
-                bar = await _edit_progress(bar, f"✅ تم التحميل ({size_str}) — ⬆️ جارٍ الرفع [{_progress_bar(0)}] 0%")
+                bar = await _edit_progress(bar, f"✅ تم التحميل ({size_str}) — ⬆️ {_progress_bar(0)} 0% — جارٍ الرفع")
             up_state["pct"] = 0
             caption = (title or "الفيديو")[:1024]
 
@@ -581,7 +586,7 @@ async def watch_and_deliver(chat_id: int, jid: str, status_msg=None, queue_pos: 
             while not send_task.done():
                 pct = up_state["pct"]
                 if pct != last_up and bar is not None:
-                    bar = await _edit_progress(bar, f"⬆️ جارٍ الرفع [{_progress_bar(pct)}] {pct}%")
+                    bar = await _edit_progress(bar, f"⬆️ {_progress_bar(pct)} {pct}% — جارٍ الرفع")
                     last_up = pct
                 await asyncio.sleep(1)
             try:

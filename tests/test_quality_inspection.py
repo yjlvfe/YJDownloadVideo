@@ -1,4 +1,5 @@
 from app.extractor import UniversalExtractor
+from app.media_choice import normalize_qualities
 from app.quality_runtime_patch import install
 
 install()
@@ -27,7 +28,9 @@ def test_inspect_returns_rich_real_video_formats(monkeypatch):
 
     assert result["source"] == "ytdlp"
     assert result["title"] == "4K sample"
-    assert [item["height"] for item in result["formats"]] == [1080, 2160]
+    assert [
+        item["height"] for item in result["formats"] if item.get("height") is not None
+    ] == [1080, 2160]
     assert result["formats"][0] == {
         "id": "137",
         "height": 1080,
@@ -37,6 +40,11 @@ def test_inspect_returns_rich_real_video_formats(monkeypatch):
         "filesize": 80,
         "filesize_approx": None,
     }
+    qualities = normalize_qualities(result["formats"])
+    assert [(item.key, item.size) for item in qualities] == [
+        ("1080", 85),
+        ("2160", 205),
+    ]
 
 
 def test_inspect_never_invents_resolutions_when_no_video_formats(monkeypatch):

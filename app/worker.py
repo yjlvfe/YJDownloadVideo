@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import multiprocessing as mp
+import threading
 import time
 from datetime import timedelta
 from pathlib import Path
@@ -15,6 +16,7 @@ from .platform_runtime import get_youtube_circuit
 from .redaction import sanitize_external_error
 from .security import make_token
 from .status import write_status
+from .storage_leases import StorageLeaseRegistry
 from .youtube_policy import classify_youtube_error
 
 
@@ -73,6 +75,14 @@ def _safe_failure(exc: BaseException) -> str:
     )
 
 
+def _lease_heartbeat_loop(lease: Any, stop: threading.Event) -> None:
+    while not stop.wait(30):
+        try:
+            lease.heartbeat()
+        except (OSError, RuntimeError):
+            return
+
+
 def _extract_in_child(job_id: str, result_queue: Any) -> None:
     from .extractor import UniversalExtractor
 
@@ -85,10 +95,21 @@ def _extract_in_child(job_id: str, result_queue: Any) -> None:
         url = str(job.url)
         requested_format = str(job.requested_format or "best")
 
-    outdir = settings.storage_path / job_id
+    storage_root = settings.storage_path
+    outdir = storage_root / job_id
     outdir.mkdir(exist_ok=True)
+    lease = StorageLeaseRegistry(storage_root).lease(outdir)
+    heartbeat_stop = threading.Event()
+    heartbeat_thread = threading.Thread(
+        target=_lease_heartbeat_loop,
+        args=(lease, heartbeat_stop),
+        daemon=True,
+        name=f"storage-lease-{job_id}",
+    )
+    heartbeat_thread.start()
 
     def hook(data: dict) -> None:
+        lease.heartbeat()
         if data.get("status") == "downloading":
             with SessionLocal() as database:
                 current = database.get(Job, job_id)
@@ -102,17 +123,18 @@ def _extract_in_child(job_id: str, result_queue: Any) -> None:
         elif data.get("status") in {"finished", "post-processing"}:
             write_status(job_id, "preparing", 100)
 
-    extractor = UniversalExtractor(
-        cookies_file=_cookie_file_for_job(owner_key, url),
-        proxy_url=_proxy_for_job(url),
-        use_browser=settings.enable_browser_capture and not settings.vercel_mode,
-        progress_hook=hook,
-        max_filesize=settings.max_file_size_bytes,
-        max_duration=settings.max_duration_seconds,
-        browser_bin=settings.browser_bin,
-        request_timeout=settings.request_timeout_seconds,
-    )
+    extractor = None
     try:
+        extractor = UniversalExtractor(
+            cookies_file=_cookie_file_for_job(owner_key, url),
+            proxy_url=_proxy_for_job(url),
+            use_browser=settings.enable_browser_capture and not settings.vercel_mode,
+            progress_hook=hook,
+            max_filesize=settings.max_file_size_bytes,
+            max_duration=settings.max_duration_seconds,
+            browser_bin=settings.browser_bin,
+            request_timeout=settings.request_timeout_seconds,
+        )
         result = extractor.download(url, outdir, preferred=requested_format)
         media_file = Path(result["path"])
         if not media_file.exists():
@@ -128,7 +150,11 @@ def _extract_in_child(job_id: str, result_queue: Any) -> None:
     except BaseException as exc:  # noqa: BLE001
         result_queue.put({"ok": False, "error": _safe_failure(exc)})
     finally:
-        extractor.cleanup()
+        if extractor is not None:
+            extractor.cleanup()
+        heartbeat_stop.set()
+        heartbeat_thread.join(timeout=2)
+        lease.close()
 
 
 def _download_timeout_seconds() -> int:

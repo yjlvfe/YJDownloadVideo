@@ -1,0 +1,29 @@
+name: tests
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: ["fix/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+      - name: Compile
+        run: python -m compileall -q app scripts
+      - name: Test
+        run: pytest -q

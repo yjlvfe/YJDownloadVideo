@@ -52,6 +52,16 @@ def test_dockerfile_uses_test_and_runtime_stages_without_copying_repo_to_final()
     assert "user app" in runtime_section
 
 
+def test_non_root_runtime_owns_configured_telegram_work_directories() -> None:
+    dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
+
+    assert "/var/lib/telegram-bot-api" in dockerfile
+    assert "/tmp/telegram-bot-api" in dockerfile
+    assert "chown -R app:app" in dockerfile
+    assert dockerfile.index("/var/lib/telegram-bot-api") < dockerfile.rindex("USER app")
+    assert dockerfile.index("/tmp/telegram-bot-api") < dockerfile.rindex("USER app")
+
+
 def test_docker_context_excludes_local_state_and_repository_metadata() -> None:
     ignored = set(_requirements(".dockerignore"))
 

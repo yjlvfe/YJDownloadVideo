@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from app.config import ffmpeg_location
 from app.video_delivery import prepare_video_upload
@@ -40,6 +43,9 @@ def test_prepare_video_upload_extracts_real_metadata_and_thumbnail(monkeypatch, 
 
 
 def test_prepare_video_upload_works_with_real_ffmpeg(tmp_path: Path):
+    if shutil.which("ffprobe") is None:
+        pytest.skip("system ffprobe is required for the real integration check")
+
     video = tmp_path / "real.mp4"
     subprocess.run(
         [

@@ -57,7 +57,12 @@ def classify_youtube_error(exc: BaseException | str) -> str:
 
 
 def youtube_retry_allowed(classification: str, attempt: int) -> bool:
-    return classification == FRAGMENT_FORBIDDEN and int(attempt) == 0
+    attempt_number = int(attempt)
+    if classification == FRAGMENT_FORBIDDEN:
+        return attempt_number == 0
+    if classification == TRANSIENT:
+        return attempt_number < 2
+    return False
 
 
 @dataclass(frozen=True, slots=True)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -16,6 +17,7 @@ from .youtube_policy import (
     RATE_LIMITED,
     YouTubeCircuit,
     classify_youtube_error,
+    youtube_retry_allowed,
 )
 
 _PATCHED = False
@@ -52,7 +54,9 @@ def _canonical_youtube_url(url: str) -> str:
     return f"https://www.youtube.com/watch?v={match.group(1)}"
 
 
-def _provider_extractor_args() -> dict[str, dict[str, list[str]]]:
+def _provider_extractor_args(
+    authenticated: bool = False,
+) -> dict[str, dict[str, list[str]]]:
     provider_url = os.getenv("BGUTIL_PROVIDER_URL", "http://127.0.0.1:4416").rstrip("/")
     visitor_data = os.getenv("YOUTUBE_VISITOR_DATA", "").strip()
     youtube: dict[str, list[str]] = {
@@ -60,10 +64,16 @@ def _provider_extractor_args() -> dict[str, dict[str, list[str]]]:
         "fetch_pot": ["always"],
         "pot_trace": ["false"],
         "use_ad_playback_context": ["true"],
-        "player_skip": ["webpage", "configs"],
     }
-    if visitor_data:
-        youtube["visitor_data"] = [visitor_data]
+    if authenticated:
+        # With account cookies yt-dlp must fetch the webpage/configs so it can
+        # discover the account Data Sync ID. Skipping them causes opaque
+        # transient failures and missing GVS PO tokens.
+        pass
+    else:
+        youtube["player_skip"] = ["webpage", "configs"]
+        if visitor_data:
+            youtube["visitor_data"] = [visitor_data]
     return {
         "youtube": youtube,
         "youtubepot-bgutilhttp": {"base_url": [provider_url]},
@@ -75,7 +85,6 @@ def _fallback_extractor_args() -> dict[str, dict[str, list[str]]]:
         "youtube": {
             "player_client": ["web_safari"],
             "fetch_pot": ["never"],
-            "player_skip": ["webpage", "configs"],
         }
     }
 
@@ -125,8 +134,18 @@ def _youtube_options(
     mode: str,
 ) -> dict[str, Any]:
     options = _ORIGINAL_BASE_OPTIONS(self, outdir, preferred)
+
+    cookie = self.cookies_file or cookie_file_for_url(
+        str(getattr(self, "_runtime_url", "") or "")
+    )
+    if cookie:
+        self.cookies_file = cookie
+        options["cookiefile"] = cookie
+
     options["extractor_args"] = (
-        _provider_extractor_args() if mode == "primary" else _fallback_extractor_args()
+        _provider_extractor_args(authenticated=bool(cookie))
+        if mode == "primary"
+        else _fallback_extractor_args()
     )
     options["js_runtimes"] = {"node": {}}
     options["retries"] = 1
@@ -136,10 +155,6 @@ def _youtube_options(
     options["no_warnings"] = False
     options["http_headers"] = _ytdlp_headers()
 
-    cookie = self.cookies_file or cookie_file_for_url(str(getattr(self, "_runtime_url", "") or ""))
-    if cookie:
-        self.cookies_file = cookie
-        options["cookiefile"] = cookie
     proxy = str(getattr(self, "proxy_url", "") or "").strip()
     if proxy:
         options["proxy"] = proxy
@@ -173,6 +188,20 @@ def _latest_media_file(directory: Path) -> Path | None:
     return max(files, key=lambda path: path.stat().st_mtime) if files else None
 
 
+def _run_with_youtube_retries(operation, *, sleep=time.sleep):
+    """Retry only failures classified as safely transient, with a strict cap."""
+    attempt = 0
+    while True:
+        try:
+            return operation()
+        except Exception as exc:  # noqa: BLE001
+            classification = classify_youtube_error(exc)
+            if not youtube_retry_allowed(classification, attempt):
+                raise DownloadError(classification) from exc
+            sleep(float(2**attempt))
+            attempt += 1
+
+
 def _download_youtube_attempt(
     self: UniversalExtractor,
     url: str,
@@ -183,17 +212,20 @@ def _download_youtube_attempt(
     from yt_dlp import YoutubeDL
 
     attempt_dir = Path(outdir) / f"youtube-{mode}"
-    shutil.rmtree(attempt_dir, ignore_errors=True)
-    attempt_dir.mkdir(parents=True, exist_ok=True)
-    options = _youtube_options(self, attempt_dir, preferred, mode)
-    options["outtmpl"] = str(attempt_dir / "%(title).120s.%(ext)s")
+
+    def extract():
+        shutil.rmtree(attempt_dir, ignore_errors=True)
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+        options = _youtube_options(self, attempt_dir, preferred, mode)
+        options["outtmpl"] = str(attempt_dir / "%(title).120s.%(ext)s")
+        with YoutubeDL(options) as ydl:
+            return ydl.extract_info(url, download=True)
 
     try:
-        with YoutubeDL(options) as ydl:
-            extracted = ydl.extract_info(url, download=True)
-    except Exception as exc:  # noqa: BLE001
+        extracted = _run_with_youtube_retries(extract)
+    except DownloadError:
         shutil.rmtree(attempt_dir, ignore_errors=True)
-        raise DownloadError(classify_youtube_error(exc)) from exc
+        raise
 
     info = extracted if isinstance(extracted, dict) else {}
     path = _latest_media_file(attempt_dir)
@@ -277,8 +309,12 @@ def _extract_youtube_info(self: UniversalExtractor, url: str, mode: str) -> dict
     options.pop("outtmpl", None)
     options.pop("progress_hooks", None)
     options.pop("postprocessors", None)
-    with YoutubeDL(options) as ydl:
-        info = ydl.extract_info(url, download=False)
+
+    def extract():
+        with YoutubeDL(options) as ydl:
+            return ydl.extract_info(url, download=False)
+
+    info = _run_with_youtube_retries(extract)
     if not isinstance(info, dict):
         raise DownloadError("youtube_no_metadata")
     if info.get("is_live"):

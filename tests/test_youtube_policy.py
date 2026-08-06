@@ -41,6 +41,12 @@ def test_fragment_403_allows_one_full_reextraction_only() -> None:
     assert youtube_retry_allowed(FRAGMENT_FORBIDDEN, attempt=1) is False
 
 
+def test_transient_failure_allows_two_bounded_retries() -> None:
+    assert youtube_retry_allowed(TRANSIENT, attempt=0) is True
+    assert youtube_retry_allowed(TRANSIENT, attempt=1) is True
+    assert youtube_retry_allowed(TRANSIENT, attempt=2) is False
+
+
 def test_circuit_opens_blocks_then_allows_one_canary() -> None:
     now = [1000.0]
     store: dict[str, object] = {}

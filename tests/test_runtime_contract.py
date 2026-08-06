@@ -29,6 +29,7 @@ def test_runtime_defaults_are_safe_and_observable(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setenv("ENABLE_PUBLIC_YOUTUBE_FALLBACK", "0")
     monkeypatch.delenv("FILE_TTL_SECONDS", raising=False)
     monkeypatch.delenv("MAX_DURATION_SECONDS", raising=False)
+    monkeypatch.delenv("DOWNLOAD_TIMEOUT_SECONDS", raising=False)
 
     settings = Settings(_env_file=None)
 
@@ -38,6 +39,7 @@ def test_runtime_defaults_are_safe_and_observable(monkeypatch: pytest.MonkeyPatc
     assert settings.enable_public_youtube_fallback is False
     assert settings.file_ttl_seconds == 3600
     assert settings.max_duration_seconds == 0
+    assert settings.download_timeout_seconds == 21600
     assert settings.max_active_jobs_per_ip == 2
     assert settings.max_active_jobs_per_telegram_user == 2
     assert "worker-secret" not in repr(settings)

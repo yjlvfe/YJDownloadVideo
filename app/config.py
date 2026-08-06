@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     file_ttl_seconds: int = 3600
     max_file_size_bytes: int = 2_000_000_000
     max_duration_seconds: int = 0
+    download_timeout_seconds: int = 21_600
     rate_limit_per_minute: int = 10
     telegram_bot_token: str = Field(default="", repr=False)
     telegram_bot_api_base: str = ""

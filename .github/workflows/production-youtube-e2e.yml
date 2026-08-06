@@ -1,0 +1,66 @@
+name: production-youtube-e2e
+
+on:
+  push:
+    branches: ["test/production-youtube-e2e-20260806"]
+
+permissions:
+  contents: read
+
+jobs:
+  youtube:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Install media probe
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Download one short YouTube video through production
+        shell: bash
+        run: |
+          set -euo pipefail
+          base='https://yj-download-video.vercel.app'
+          url='https://www.youtube.com/watch?v=jNQXAC9IVRw'
+
+          created=$(curl --fail-with-body --silent --show-error --max-time 90 \
+            -H 'content-type: application/json' \
+            --data "$(jq -nc --arg url "$url" '{url:$url,format_id:"best"}')" \
+            "$base/api/jobs")
+          echo "$created" | jq '{id,status,error}'
+          job_id=$(echo "$created" | jq -er '.id')
+
+          for attempt in $(seq 1 90); do
+            status=$(curl --fail-with-body --silent --show-error --max-time 30 \
+              "$base/api/jobs/$job_id")
+            state=$(echo "$status" | jq -r '.status')
+            echo "attempt=$attempt state=$state"
+
+            if [ "$state" = 'ready' ]; then
+              download_url=$(echo "$status" | jq -er '.download_url')
+              case "$download_url" in
+                http*) ;;
+                /*) download_url="$base$download_url" ;;
+                *) echo 'invalid download URL'; exit 1 ;;
+              esac
+
+              curl --fail-with-body --location --silent --show-error \
+                --max-time 180 --output media.bin "$download_url"
+              test -s media.bin
+              ffprobe -v error -show_entries stream=codec_type \
+                -of json media.bin > probe.json
+              jq -e '[.streams[].codec_type] | index("video") != null' probe.json
+              jq -e '[.streams[].codec_type] | index("audio") != null' probe.json
+              echo "download_bytes=$(stat -c%s media.bin)"
+              jq . probe.json
+              exit 0
+            fi
+
+            if [ "$state" = 'failed' ]; then
+              echo "$status" | jq .
+              exit 1
+            fi
+
+            sleep 3
+          done
+
+          echo 'production YouTube job timed out'
+          exit 1

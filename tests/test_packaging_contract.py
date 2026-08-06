@@ -27,8 +27,13 @@ def test_development_dependencies_extend_runtime() -> None:
     assert any(line.startswith("pytest-asyncio==") for line in development)
 
 
-def test_compatibility_requirements_install_development_tooling() -> None:
-    assert _requirements("requirements.txt") == ["-r requirements-dev.txt"]
+def test_vercel_requirements_are_direct_runtime_dependencies() -> None:
+    vercel = _requirements("requirements.txt")
+    runtime = _requirements("requirements-runtime.txt")
+
+    assert vercel == runtime
+    assert not any(line.startswith("-r ") for line in vercel)
+    assert not any(line.lower().startswith("pytest") for line in vercel)
 
 
 def test_dockerfile_uses_test_and_runtime_stages_without_copying_repo_to_final() -> None:

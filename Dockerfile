@@ -51,8 +51,16 @@ COPY --from=provider-builder \
 WORKDIR /app
 RUN addgroup -S app \
     && adduser -S -G app -h /app app \
-    && mkdir -p /app/data /app/storage \
-    && chown -R app:app /app /opt/bgutil-ytdlp-pot-provider
+    && mkdir -p \
+         /app/data \
+         /app/storage \
+         /var/lib/telegram-bot-api \
+         /tmp/telegram-bot-api \
+    && chown -R app:app \
+         /app \
+         /opt/bgutil-ytdlp-pot-provider \
+         /var/lib/telegram-bot-api \
+         /tmp/telegram-bot-api
 
 COPY --chown=app:app docker /app/docker
 RUN chmod 0755 /app/docker/start-render.sh /app/docker/chromium-wpc.sh \

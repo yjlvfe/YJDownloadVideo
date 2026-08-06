@@ -9,6 +9,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 
+MIN_QUALITY_HEIGHT = 144
+MAX_QUALITY_HEIGHT = 8192
+
+
 @dataclass(frozen=True, slots=True)
 class QualityOption:
     key: str
@@ -18,8 +22,6 @@ class QualityOption:
 
 
 def _bounded_video_selector(height: int) -> str:
-    # The advertised height is selected exactly first. The bounded alternatives
-    # are used only if the source changes between inspection and download.
     return (
         f"bestvideo[height={height}]+bestaudio/"
         f"best[height={height}]/"
@@ -35,21 +37,6 @@ _QUALITY_REGISTRY: tuple[QualityOption, ...] = (
         selector="bestvideo*+bestaudio/best",
     ),
     QualityOption(
-        key="1080",
-        label="1080p",
-        selector=_bounded_video_selector(1080),
-    ),
-    QualityOption(
-        key="720",
-        label="720p",
-        selector=_bounded_video_selector(720),
-    ),
-    QualityOption(
-        key="480",
-        label="480p",
-        selector=_bounded_video_selector(480),
-    ),
-    QualityOption(
         key="audio",
         label="🎧 صوت MP3",
         selector="bestaudio/best",
@@ -62,6 +49,10 @@ _DYNAMIC_SELECTOR_RE = re.compile(
     r"best\[height=\1\]/bestvideo\[height<=\1\]\+bestaudio/"
     r"best\[height<=\1\]$"
 )
+
+
+def _valid_height(value: int) -> bool:
+    return MIN_QUALITY_HEIGHT <= int(value) <= MAX_QUALITY_HEIGHT
 
 
 def quality_options(*, include_audio: bool = False) -> list[QualityOption]:
@@ -81,7 +72,7 @@ def selector_for_quality(key: str) -> str:
         return _QUALITY_BY_KEY["best"].selector
     if normalized.isdigit():
         height = int(normalized)
-        if 144 <= height <= 1080:
+        if _valid_height(height):
             return _bounded_video_selector(height)
     raise ValueError("unknown quality")
 
@@ -94,7 +85,7 @@ def quality_key_for_selector(selector: str) -> str | None:
     match = _DYNAMIC_SELECTOR_RE.fullmatch(normalized)
     if match:
         height = int(match.group(1))
-        if 144 <= height <= 1080:
+        if _valid_height(height):
             return str(height)
     return None
 
@@ -107,7 +98,7 @@ def is_quality_key(key: str, *, include_audio: bool = False) -> bool:
         return True
     if normalized == "original":
         return True
-    return normalized.isdigit() and 144 <= int(normalized) <= 1080
+    return normalized.isdigit() and _valid_height(int(normalized))
 
 
 def _height_of(item: dict[str, Any]) -> int | None:
@@ -119,25 +110,63 @@ def _height_of(item: dict[str, Any]) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def _format_size(item: dict[str, Any]) -> int | None:
+    raw = item.get("filesize") or item.get("filesize_approx") or item.get("size")
+    if isinstance(raw, (int, float)) and raw > 0:
+        return int(raw)
+    return None
+
+
+def _compatibility_score(item: dict[str, Any]) -> int:
+    ext = str(item.get("ext") or "").lower()
+    codec = str(item.get("vcodec") or "").lower()
+    if ext == "mp4" and codec.startswith("avc1"):
+        return 0
+    if ext == "mp4":
+        return 1
+    return 2
+
+
 def normalize_qualities(raw_formats: list[dict[str, Any]] | None) -> list[QualityOption]:
-    by_height: dict[int, QualityOption] = {}
-    for item in raw_formats or []:
-        if item.get("vcodec") == "none":
+    formats = list(raw_formats or [])
+    audio_sizes = [
+        size
+        for item in formats
+        if str(item.get("vcodec") or "").lower() == "none"
+        and str(item.get("acodec") or "").lower() not in {"", "none"}
+        and (size := _format_size(item)) is not None
+    ]
+    best_audio_size = max(audio_sizes, default=0)
+
+    by_height: dict[int, tuple[int, int, QualityOption]] = {}
+    for item in formats:
+        if str(item.get("vcodec") or "").lower() in {"", "none"}:
             continue
         height = _height_of(item)
-        if not height or not 144 <= height <= 1080:
+        if not height or not _valid_height(height):
             continue
-        size = item.get("filesize") or item.get("filesize_approx") or item.get("size")
-        size = int(size) if isinstance(size, (int, float)) and size > 0 else None
+
+        video_size = _format_size(item)
+        has_audio = str(item.get("acodec") or "").lower() not in {"", "none"}
+        final_size = video_size
+        if video_size is not None and not has_audio and best_audio_size:
+            final_size = video_size + best_audio_size
+
+        score = _compatibility_score(item)
         candidate = QualityOption(
             key=str(height),
             label=f"{height}p",
             selector=_bounded_video_selector(height),
-            size=size,
+            size=final_size,
         )
         previous = by_height.get(height)
-        if previous is None or (candidate.size or 0) > (previous.size or 0):
-            by_height[height] = candidate
+        candidate_base_size = video_size or 0
+        if (
+            previous is None
+            or score < previous[0]
+            or (score == previous[0] and candidate_base_size > previous[1])
+        ):
+            by_height[height] = (score, candidate_base_size, candidate)
 
     if not by_height:
         return [
@@ -148,7 +177,7 @@ def normalize_qualities(raw_formats: list[dict[str, Any]] | None) -> list[Qualit
                 size=None,
             )
         ]
-    return [by_height[key] for key in sorted(by_height)]
+    return [by_height[key][2] for key in sorted(by_height)]
 
 
 @dataclass(slots=True)

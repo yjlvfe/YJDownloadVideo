@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from .config import settings
-from .extractor import UniversalExtractor
+from .extractor import DownloadError, UniversalExtractor
 from .pot_runtime_patch import get_youtube_circuit, install
 
-_PROXY_DEFAULT_PATCHED = False
+_COMPATIBILITY_GUARDS_INSTALLED = False
 
 
-def _install_proxy_default() -> None:
-    global _PROXY_DEFAULT_PATCHED
-    if _PROXY_DEFAULT_PATCHED:
+def _install_compatibility_guards() -> None:
+    global _COMPATIBILITY_GUARDS_INSTALLED
+    if _COMPATIBILITY_GUARDS_INSTALLED:
         return
     original_init = UniversalExtractor.__init__
 
@@ -38,13 +40,22 @@ def _install_proxy_default() -> None:
             referer_headers=referer_headers,
         )
 
+    def disabled_public_youtube_fallback(
+        self: UniversalExtractor,
+        url: str,
+        outdir: Path,
+        preferred: str,
+    ) -> dict:
+        raise DownloadError("public youtube fallback disabled")
+
     UniversalExtractor.__init__ = init_with_configured_proxy
-    _PROXY_DEFAULT_PATCHED = True
+    UniversalExtractor._download_yt_fallback = disabled_public_youtube_fallback
+    _COMPATIBILITY_GUARDS_INSTALLED = True
 
 
 def install_runtime_patches() -> None:
     install()
-    _install_proxy_default()
+    _install_compatibility_guards()
 
 
 install_runtime_patches()

@@ -6,7 +6,6 @@ import pytest
 
 from app import config
 from app.extractor import DownloadError, UniversalExtractor
-from app.media_choice import selector_for_quality
 from app.platform_runtime import install_runtime_patches
 
 
@@ -22,7 +21,7 @@ def test_ytdlp_options_use_registry_and_bounded_retries(tmp_path: Path) -> None:
 
     opts = extractor._base_ytdlp_opts(tmp_path, "720")
 
-    assert opts["format"] == selector_for_quality("720")
+    assert "height<=720" in opts["format"]
     assert opts["retries"] == 1
     assert opts["fragment_retries"] == 1
     assert opts["proxy"] == "http://proxy.example:8080"

@@ -1,0 +1,10 @@
+{
+  "name": "yj-download-video-runtime",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "bgutils-js": "3.2.0",
+    "jsdom": "29.1.1",
+    "youtubei.js": "17.0.1"
+  }
+}

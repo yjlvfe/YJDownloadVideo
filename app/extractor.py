@@ -227,17 +227,56 @@ class UniversalExtractor:
 
         raise DownloadError("لم يُعثر على أي فيديو في هذا الرابط. " + " | ".join(errors[:3]))
 
+    def _download_innertube(self, url: str, outdir: Path, preferred: str) -> dict:
+        """مسار يوتيوب الشامل: youtubei.js + PO tokens داخليًا — كل الجودات بلا كوكيز.
+
+        من IP سليم يعمل بكامل الجودات؛ من IP محجوب يفشل (لا روابط) فيعود
+        المتصل للمسار العادي (yt-dlp ← android 360p) بسلاسة.
+        """
+        from .youtube_innertube import run_youtube_innertube, YouTubeInnertubeError
+        outdir = Path(outdir)
+        outdir.mkdir(parents=True, exist_ok=True)
+        try:
+            result = run_youtube_innertube(
+                action="download",
+                url=url,
+                preferred=preferred,
+                output_dir=outdir,
+                max_bytes=self.max_filesize,
+                timeout_seconds=900,
+            )
+        except YouTubeInnertubeError as exc:
+            raise DownloadError(str(exc)) from exc
+        path = Path(result["path"])
+        if not _has_audio(path):
+            path.unlink(missing_ok=True)
+            raise DownloadError("المقطع المحمّل بلا صوت (YouTube.js)")
+        if preferred != "audio" and not _has_video(path):
+            path.unlink(missing_ok=True)
+            raise DownloadError("المقطع المحمّل بلا فيديو (YouTube.js)")
+        return {"path": str(path), "title": result.get("title") or "",
+                "duration": result.get("duration"), "thumbnail": result.get("thumbnail") or "",
+                "ext": result.get("ext") or path.suffix.lstrip(".")}
+
     def download(self, url: str, outdir: Path, preferred: str = "best",
                  title_hint: str = "") -> dict:
         """ينزّل الفيديو من أي رابط ويعيد {path,title,duration,thumbnail,ext}.
 
-        التدفق المبسّط (2026-08): محاولة yt-dlp نظيفة واحدة ← L4 لخوادم يوتيوب
-        البديلة عند الحظر (بلا لمس يوتيوب أصلًا) ← اكتشاف L2/L3 وتحميل أفضل
-        مرشح سليم. لا تعدد عملاء ولا محاولات متكررة — كل طلب إضافي يرفع
-        علم الروبوت.
+        التدفق (2026-08): يوتيوب ← YouTube.js الشامل أولًا (كل الجودات بلا كوكيز)
+        ← yt-dlp نظيفة واحدة ← L4 للمرايا ← L2/L3 مرشح سليم ← android 360p.
+        لا تعدد عملاء ولا محاولات متكررة — كل طلب إضافي يرفع علم الروبوت.
         """
         outdir = Path(outdir)
         outdir.mkdir(parents=True, exist_ok=True)
+
+        # 🚀 يوتيوب: المسار الشامل أولًا (youtubei.js + bgutils PO tokens)
+        if self._is_youtube(url):
+            try:
+                from .youtube_innertube import innertube_available
+                if innertube_available():
+                    return self._download_innertube(url, outdir, preferred)
+            except DownloadError:
+                pass  # انزل للمسار العادي — لا نمنع التحميل أبدًا
 
         # L1: yt-dlp كامل (الأقوى: دمج جودة عالية + صوت)
         try:

@@ -261,18 +261,31 @@ class UniversalExtractor:
     def inspect(self, url: str) -> dict:
         """معاينة سريعة لأي رابط: yt-dlp أولاً (قائمة جودات حقيقية)، ثم المسح/المتصفح.
 
-        يُرجع: {source, title, thumbnail, duration, formats: [{id,label,size,height}]}
+        يُرجع: {source, title, thumbnail, duration, formats: [{id,label,size,height}], audio_size}
         ⚠️ الجودات دائمًا حقيقية من المقطع نفسه — ممنوع أي جودات افتراضية/ثابتة.
+        الحجم = حجم الفيديو + أفضل تدفق صوتي (تقدير الحجم النهائي للملف المدمج).
         """
         try:
             info = self._ytdlp_info(url)
+            raw = info.get("formats") or []
+            # أفضل تدفق صوتي منفصل — يُضاف لحجم أي دقة فيديو (الملف النهائي مدمج)
+            audio_size = None
+            for f in raw:
+                if f.get("vcodec") == "none" and f.get("acodec") not in (None, "none"):
+                    sz = f.get("filesize") or f.get("filesize_approx")
+                    if sz and (audio_size is None or sz > audio_size):
+                        audio_size = sz
             # دقة واحدة لكل ارتفاع، مع تفضيل mp4/h264 (توافق أوسع) ثم الأكبر حجمًا
             best_per_height: dict[int, dict] = {}
-            for f in info.get("formats") or []:
+            for f in raw:
                 if f.get("vcodec") == "none" or not f.get("height"):
                     continue
                 size = f.get("filesize") or f.get("filesize_approx")
-                if self.max_filesize and size and size > self.max_filesize:
+                has_audio = f.get("acodec") not in (None, "none")
+                est = size
+                if size and not has_audio and audio_size:
+                    est = size + audio_size  # فيديو منفصل + صوت = الحجم الحقيقي للملف
+                if self.max_filesize and est and est > self.max_filesize:
                     continue
                 h = int(f["height"])
                 score = (0 if (f.get("ext") == "mp4"
@@ -280,11 +293,11 @@ class UniversalExtractor:
                          else (1 if f.get("ext") == "mp4" else 2))
                 cur = best_per_height.get(h)
                 if cur is None or score < cur["_score"] or (
-                        score == cur["_score"] and (size or 0) > (cur.get("size") or 0)):
+                        score == cur["_score"] and (est or 0) > (cur.get("size") or 0)):
                     best_per_height[h] = {
                         "id": str(h), "height": h,
                         "label": f'{h}p / {f.get("ext", "mp4")}',
-                        "size": size, "_score": score,
+                        "size": est, "_score": score,
                     }
             formats = []
             for h in sorted(best_per_height, reverse=True):
@@ -293,13 +306,13 @@ class UniversalExtractor:
                 formats.append(entry)
             return {"source": "ytdlp", "title": info.get("title"),
                     "thumbnail": info.get("thumbnail"), "duration": info.get("duration"),
-                    "formats": formats[:12]}
+                    "formats": formats[:12], "audio_size": audio_size}
         except Exception:  # noqa: BLE001
             pass
         d = self.discover(url, skip_ytdlp=True)
         return {"source": d.get("source"), "title": d.get("title"),
                 "thumbnail": d.get("thumbnail"), "duration": d.get("duration"),
-                "formats": []}
+                "formats": [], "audio_size": None}
 
     # ------------------------------------------------------------------
     # L1 — yt-dlp

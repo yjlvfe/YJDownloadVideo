@@ -13,8 +13,8 @@ def test_quality_label_dynamic_digits():
     assert bot._quality_label("360") == "360p"
 
 
-def test_offered_heights_from_real_formats():
-    """أزرار الجودات تُبنى من جودات المقطع الحقيقية فقط — تنازليًا وبلا تكرار."""
+def test_offered_qualities_from_real_formats():
+    """أزرار الجودات تُبنى من جودات المقطع الحقيقية فقط — تنازليًا وبلا تكرار، مع الأحجام."""
     formats = [
         {"id": "137", "height": 1080, "label": "1080p / mp4", "size": 100},
         {"id": "136", "height": 720, "label": "720p / mp4", "size": 50},
@@ -22,10 +22,47 @@ def test_offered_heights_from_real_formats():
         {"id": "sb1", "height": None, "label": "storyboard", "size": None},
         {"id": "140", "height": None, "label": "audio", "size": 5},
     ]
-    assert bot._offered_heights(formats) == [1080, 720, 360]
+    out = bot._offered_qualities(formats)
+    assert [q["height"] for q in out] == [1080, 720, 360]
+    assert out[0]["size"] == 100
+    assert out[1]["size"] == 50
     # بلا جودات حقيقية → لا أزرار دقات
-    assert bot._offered_heights([]) == []
-    assert bot._offered_heights([{"id": "x", "label": "audio"}]) == []
+    assert bot._offered_qualities([]) == []
+    assert bot._offered_qualities([{"id": "x", "label": "audio"}]) == []
+
+
+def test_fmt_mb_size_in_button():
+    """حجم كل جودة يظهر داخل الزر بصيغة مقروءة."""
+    assert bot._fmt_mb(229 * 1048576) == "229MB"
+    assert bot._fmt_mb(int(11.3 * 1048576)) == "11.3MB"
+    assert bot._fmt_mb(int(0.5 * 1048576)) == "0.5MB"
+    assert bot._fmt_mb(None) == ""
+    assert bot._fmt_mb(0) == ""
+
+
+def test_video_meta_extracts_real_metadata(tmp_path):
+    """المعاينة + المدة/الأبعاد تُستخرج من الملف نفسه — أساس عرض الفيديو كفيديو لا كملف."""
+    import subprocess
+    src = tmp_path / "clip.mp4"
+    r = subprocess.run(
+        ["ffmpeg", "-y", "-v", "error",
+         "-f", "lavfi", "-i", "testsrc=duration=3:size=640x360:rate=10",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
+         str(src)], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    meta = bot._video_meta(src, tmp_path)
+    assert meta.get("width") == 640
+    assert meta.get("height") == 360
+    assert meta.get("duration") == 3
+    assert meta.get("thumbnail") and Path(meta["thumbnail"]).is_file()
+    assert Path(meta["thumbnail"]).stat().st_size > 0
+
+
+def test_video_meta_tolerates_missing_file(tmp_path):
+    """لا يرمي استثناء على ملف غير موجود — الإرسال يبقى يعمل بدونه."""
+    meta = bot._video_meta(tmp_path / "missing.mp4", tmp_path)
+    assert isinstance(meta, dict)
 
 
 def test_pending_cleanup_removes_expired():

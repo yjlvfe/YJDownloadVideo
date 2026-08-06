@@ -143,11 +143,29 @@ def _quality_label(fmt: str) -> str:
     return fmt
 
 
-def _offered_heights(formats: list[dict], limit: int = 6) -> list[int]:
-    """دقات فريدة تنازليًا من قائمة الجودات الحقيقية للمقطع — أساس أزرار البوت."""
-    return sorted({int(f["height"]) for f in formats or []
-                   if f.get("height") and str(f.get("height")).isdigit()},
-                  reverse=True)[:limit]
+def _offered_qualities(formats: list[dict], limit: int = 6) -> list[dict]:
+    """دقات فريدة تنازليًا مع أحجامها من قائمة الجودات الحقيقية — أساس أزرار البوت."""
+    seen: dict[int, dict] = {}
+    for f in formats or []:
+        h = f.get("height")
+        if not h or not str(h).isdigit():
+            continue
+        h = int(h)
+        size = f.get("size")
+        cur = seen.get(h)
+        if cur is None or (size or 0) > (cur.get("size") or 0):
+            seen[h] = {"height": h, "size": size}
+    return [seen[h] for h in sorted(seen, reverse=True)][:limit]
+
+
+def _fmt_mb(size) -> str:
+    """حجم مقروء داخل الزر: 229MB / 11.3MB — بلا كسور زائدة."""
+    if not size:
+        return ""
+    mb = size / 1048576
+    if mb >= 100:
+        return f"{mb:.0f}MB"
+    return f"{mb:.1f}MB"
 
 
 def delete_job_files(job) -> None:
@@ -238,6 +256,8 @@ async def on_pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:  # noqa: BLE001
             pass
         heights: list[int] = []
+        quals: list[dict] = []
+        d: dict | None = None
         try:
             from .extractor import UniversalExtractor
             ex = UniversalExtractor(
@@ -249,23 +269,28 @@ async def on_pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     asyncio.to_thread(ex.inspect, pending["url"]), timeout=45)
             finally:
                 ex.cleanup()
-            heights = _offered_heights(d.get("formats") or [])
+            quals = _offered_qualities(d.get("formats") or [])
         except Exception:  # noqa: BLE001
-            heights = []
+            quals = []
+        heights = [q["height"] for q in quals]
         offered = {"best", *(str(h) for h in heights)}
         pending["offered"] = offered
         rows: list[list[tuple[str, str]]] = []
         if "best" in offered:
             rows.append([("⭐ الأفضل", f"pick:q:{nonce}:best")])
         row: list[tuple[str, str]] = []
-        for h in heights:
-            row.append((f"{h}p", f"pick:q:{nonce}:{h}"))
+        for q in quals:
+            # 📦 كل جودة داخل زرها تعرض حجمها الحقيقي — إجباري بلا استثناء
+            label = f"{q['height']}p" + (f" · {_fmt_mb(q['size'])}" if q.get("size") else "")
+            row.append((label, f"pick:q:{nonce}:{q['height']}"))
             if len(row) == 2:
                 rows.append(row)
                 row = []
         if row:
             rows.append(row)
-        rows.append([("🎵 صوت", f"pick:a:{nonce}"), ("❌ إلغاء", f"pick:x:{nonce}")])
+        audio_size = d.get("audio_size") if d else None
+        audio_label = "🎵 صوت" + (f" · {_fmt_mb(audio_size)}" if audio_size else "")
+        rows.append([(audio_label, f"pick:a:{nonce}"), ("❌ إلغاء", f"pick:x:{nonce}")])
         kb = _pick_kb(rows)
         note = "" if heights else "\n⚠️ تعذر تحديد الجودات المتاحة — سيُحمَّل الأفضل المتوفر."
         try:
@@ -341,6 +366,45 @@ def _progress_bar(pct: int, width: int = 12) -> str:
     return "█" * filled + "░" * (width - filled)
 
 
+def _video_meta(path, outdir) -> dict:
+    """مدة/أبعاد/صورة مصغرة حقيقية من الملف قبل الإرسال.
+
+    🎬 ضروري: خادم Bot API المحلي لا يعالج الفيديو تلقائيًا — بدون هذه البيانات
+    (duration=0 بلا معاينة) يعرض تيليجرام المقطع كملف (file) بدل فيديو.
+    """
+    import json
+    import subprocess
+    meta: dict = {}
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height,duration:format=duration",
+             "-of", "json", str(path)], capture_output=True, text=True, timeout=20)
+        d = json.loads(r.stdout)
+        st = (d.get("streams") or [{}])[0]
+        w, h = st.get("width"), st.get("height")
+        dur = st.get("duration") or d.get("format", {}).get("duration")
+        if w and h:
+            meta["width"], meta["height"] = int(w), int(h)
+        if dur:
+            meta["duration"] = int(float(dur))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        dur = meta.get("duration") or 0
+        at = min(30, max(1, dur // 4)) if dur else 2
+        thumb = Path(outdir) / "thumb.jpg"
+        subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-ss", str(at), "-i", str(path),
+             "-frames:v", "1", "-vf", "scale=320:-2", str(thumb)],
+            capture_output=True, timeout=30)
+        if thumb.is_file() and thumb.stat().st_size > 0:
+            meta["thumbnail"] = str(thumb)
+    except Exception:  # noqa: BLE001
+        pass
+    return meta
+
+
 async def _edit_progress(msg, text: str):
     """يعدّل رسالة التقدم بأمان (قد تُحذف أو يفشل التعديل — لا ننهار)."""
     try:
@@ -413,9 +477,21 @@ async def watch_and_deliver(chat_id: int, jid: str):
                     # الصوت: اسم المقطع في الوصف
                     await bot.send_audio(chat_id, InputFile(f, read_file_handle=False), caption=f"🎵 {caption}")
             else:
+                # 🎬 معاينة + بيانات حقيقية: بدونها يعرض تيليجرام الفيديو كملف (duration=0)
+                # لأن خادم Bot API المحلي لا يعالج الملفات تلقائيًا — نجهّزها بأنفسنا
+                meta = _video_meta(path, Path(path).parent)
+                thumb_path = meta.pop("thumbnail", None)
                 with open(path, "rb") as f:
-                    # الفيديو: نظيف بدون أي وصف
-                    await bot.send_video(chat_id, InputFile(f, read_file_handle=False))
+                    if thumb_path:
+                        with open(thumb_path, "rb") as tf:
+                            await bot.send_video(
+                                chat_id, InputFile(f, read_file_handle=False),
+                                thumbnail=InputFile(tf),
+                                supports_streaming=True, **meta)
+                    else:
+                        await bot.send_video(
+                            chat_id, InputFile(f, read_file_handle=False),
+                            supports_streaming=True, **meta)
 
         send_task = asyncio.create_task(do_send())
         last_up = -1

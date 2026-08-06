@@ -1,0 +1,100 @@
+name: production-real-quality-e2e
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  production:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Install media probe
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Verify real 4K inspection and one production download
+        shell: bash
+        run: |
+          set -euo pipefail
+          base='https://yj-download-video.vercel.app'
+
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent --show-error --max-time 20 "$base/api/health" >/dev/null; then
+              break
+            fi
+            test "$attempt" -lt 60
+            sleep 3
+          done
+
+          found_4k=0
+          for url in \
+            'https://www.youtube.com/watch?v=LXb3EKWsInQ' \
+            'https://www.youtube.com/watch?v=aqz-KE-bpKQ'; do
+            if ! inspected=$(curl --fail-with-body --silent --show-error --max-time 180 \
+              -H 'content-type: application/json' \
+              --data "$(jq -nc --arg url "$url" '{url:$url}')" \
+              "$base/api/inspect"); then
+              continue
+            fi
+
+            echo "$inspected" | jq '{title,formats}'
+            max_height=$(echo "$inspected" | jq -r '
+              [.formats[]? |
+                if (.height | type) == "number" then .height
+                elif ((.id // "") | tostring | test("^[0-9]+$")) then (.id | tonumber)
+                else empty end
+              ] | max // 0')
+            echo "inspected_max_height=$max_height"
+            if [ "$max_height" -ge 2160 ]; then
+              found_4k=1
+              break
+            fi
+          done
+          test "$found_4k" -eq 1
+
+          url='https://www.youtube.com/watch?v=jNQXAC9IVRw'
+          created=$(curl --fail-with-body --silent --show-error --max-time 90 \
+            -H 'content-type: application/json' \
+            --data "$(jq -nc --arg url "$url" '{url:$url,format_id:"best"}')" \
+            "$base/api/jobs")
+          echo "$created" | jq '{id,status,error}'
+          job_id=$(echo "$created" | jq -er '.id')
+
+          for attempt in $(seq 1 180); do
+            status=$(curl --fail-with-body --silent --show-error --max-time 30 \
+              "$base/api/jobs/$job_id")
+            state=$(echo "$status" | jq -r '.status')
+            echo "attempt=$attempt state=$state"
+
+            if [ "$state" = 'ready' ]; then
+              download_url=$(echo "$status" | jq -er '.download_url')
+              case "$download_url" in
+                http*) ;;
+                /*) download_url="$base$download_url" ;;
+                *) echo 'invalid download URL'; exit 1 ;;
+              esac
+
+              curl --fail-with-body --location --silent --show-error \
+                --max-time 300 --output media.bin "$download_url"
+              test -s media.bin
+              ffprobe -v error -show_entries stream=codec_type \
+                -of json media.bin > probe.json
+              jq -e '[.streams[].codec_type] | index("video") != null' probe.json
+              jq -e '[.streams[].codec_type] | index("audio") != null' probe.json
+              echo "download_bytes=$(stat -c%s media.bin)"
+              jq . probe.json
+              exit 0
+            fi
+
+            if [ "$state" = 'failed' ]; then
+              echo "$status" | jq .
+              exit 1
+            fi
+            sleep 3
+          done
+
+          echo 'production job timed out'
+          exit 1

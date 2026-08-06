@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import multiprocessing as mp
+import time
 from datetime import timedelta
 from pathlib import Path
 from queue import Empty
@@ -40,8 +41,11 @@ def _proxy_for_job(url: str) -> str:
 
 
 def _ensure_parent_youtube_allowed(url: str) -> None:
-    """Stop repeated YouTube attempts in the long-lived parent process."""
-    if _is_youtube_url(url) and not get_youtube_circuit().allow_request():
+    """Reject requests only while the shared cooldown is actively open."""
+    if not _is_youtube_url(url):
+        return
+    snapshot = get_youtube_circuit().snapshot()
+    if snapshot.state == "open" and time.time() < snapshot.opened_until:
         raise RuntimeError("youtube_circuit_open")
 
 

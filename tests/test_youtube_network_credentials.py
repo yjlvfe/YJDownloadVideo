@@ -7,6 +7,10 @@ import yt_dlp
 
 from app import worker
 from app.extractor import UniversalExtractor
+from app.platform_runtime import install_runtime_patches
+
+
+install_runtime_patches()
 
 
 def test_worker_uses_platform_cookie_when_owner_cookie_is_missing(monkeypatch, tmp_path: Path):
@@ -32,7 +36,9 @@ def test_youtube_proxy_reaches_download_and_metadata_options(monkeypatch, tmp_pa
     assert "proxy_url" in inspect.signature(UniversalExtractor).parameters
 
     proxy_url = "http://proxy-user:proxy-pass@proxy.example:8080"
-    extractor = UniversalExtractor(use_browser=False, proxy_url=proxy_url)
+    monkeypatch.setattr(worker.settings, "youtube_proxy_url", proxy_url)
+    extractor = UniversalExtractor(use_browser=False)
+    extractor._runtime_url = "https://www.youtube.com/watch?v=kTRs4ycFp_o"
 
     download_options = extractor._base_ytdlp_opts(tmp_path, "best")
     assert download_options["proxy"] == proxy_url

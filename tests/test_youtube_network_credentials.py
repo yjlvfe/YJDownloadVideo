@@ -7,6 +7,10 @@ import yt_dlp
 
 from app import worker
 from app.extractor import UniversalExtractor
+from app.platform_runtime import install_runtime_patches
+
+
+install_runtime_patches()
 
 
 def test_worker_uses_platform_cookie_when_owner_cookie_is_missing(monkeypatch, tmp_path: Path):

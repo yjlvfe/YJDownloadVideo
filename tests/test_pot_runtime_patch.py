@@ -20,23 +20,33 @@ def test_provider_uses_one_mweb_client_and_live_provider(monkeypatch):
     monkeypatch.setenv("BGUTIL_PROVIDER_URL", "http://127.0.0.1:5516/")
     monkeypatch.setenv("YOUTUBE_VISITOR_DATA", "visitor-session-value")
 
-    args = youtube_runtime._provider_extractor_args()
+    args = youtube_runtime._provider_extractor_args(authenticated=False)
 
     assert args["youtube"]["player_client"] == ["mweb"]
     assert args["youtube"]["fetch_pot"] == ["always"]
     assert args["youtube"]["visitor_data"] == ["visitor-session-value"]
+    assert args["youtube"]["player_skip"] == ["webpage", "configs"]
     assert args["youtubepot-bgutilhttp"]["base_url"] == ["http://127.0.0.1:5516"]
     assert "http://127.0.0.1:1" not in repr(args)
 
 
-def test_fallback_is_one_web_safari_attempt_without_po_provider():
+def test_authenticated_provider_discovers_account_session(monkeypatch):
+    monkeypatch.setenv("YOUTUBE_VISITOR_DATA", "must-not-override-account")
+
+    args = youtube_runtime._provider_extractor_args(authenticated=True)
+
+    assert args["youtube"]["player_client"] == ["mweb"]
+    assert "player_skip" not in args["youtube"]
+    assert "visitor_data" not in args["youtube"]
+
+
+def test_fallback_uses_web_safari_without_skipping_session_requests():
     args = youtube_runtime._fallback_extractor_args()
 
     assert args == {
         "youtube": {
             "player_client": ["web_safari"],
             "fetch_pot": ["never"],
-            "player_skip": ["webpage", "configs"],
         }
     }
 
@@ -56,8 +66,26 @@ def test_extractor_accepts_proxy_and_wires_cookie_proxy_and_provider(tmp_path: P
     assert options["cookiefile"] == "/run/secrets/youtube-cookies.txt"
     assert options["proxy"] == "http://proxy.example:8080"
     assert options["extractor_args"]["youtube"]["player_client"] == ["mweb"]
+    assert "player_skip" not in options["extractor_args"]["youtube"]
     assert options["js_runtimes"] == {"node": {}}
     assert "height<=720" in options["format"]
+
+
+def test_transient_operation_retries_twice_then_succeeds():
+    attempts: list[int] = []
+    sleeps: list[float] = []
+
+    def operation():
+        attempts.append(len(attempts) + 1)
+        if len(attempts) < 3:
+            raise RuntimeError("connection reset by peer")
+        return "ok"
+
+    result = youtube_runtime._run_with_youtube_retries(operation, sleep=sleeps.append)
+
+    assert result == "ok"
+    assert attempts == [1, 2, 3]
+    assert sleeps == [1.0, 2.0]
 
 
 def test_youtube_download_uses_only_primary_then_one_fallback(monkeypatch, tmp_path: Path):

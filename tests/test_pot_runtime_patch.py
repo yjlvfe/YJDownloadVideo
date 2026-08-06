@@ -9,6 +9,13 @@ from app import pot_runtime_patch as youtube_runtime
 from app.extractor import DownloadError, UniversalExtractor
 
 
+@pytest.fixture(autouse=True)
+def reset_youtube_circuit():
+    youtube_runtime.get_youtube_circuit().record_success()
+    yield
+    youtube_runtime.get_youtube_circuit().record_success()
+
+
 def test_provider_uses_one_mweb_client_and_live_provider(monkeypatch):
     monkeypatch.setenv("BGUTIL_PROVIDER_URL", "http://127.0.0.1:5516/")
     monkeypatch.setenv("YOUTUBE_VISITOR_DATA", "visitor-session-value")

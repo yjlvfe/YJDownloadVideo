@@ -1,4 +1,7 @@
 from app.extractor import UniversalExtractor
+from app.quality_runtime_patch import install
+
+install()
 
 
 def test_inspect_returns_rich_real_video_formats(monkeypatch):

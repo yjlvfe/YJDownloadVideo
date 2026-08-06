@@ -1,8 +1,8 @@
 name: production-youtube-e2e
 
 on:
-  push:
-    branches: ["test/production-youtube-e2e-20260806"]
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: read

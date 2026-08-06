@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import multiprocessing as mp
+import time
 from datetime import timedelta
 from pathlib import Path
 from queue import Empty
@@ -10,9 +11,11 @@ from urllib.parse import urlparse
 from . import pot_runtime_patch as _pot_runtime_patch  # noqa: F401
 from .config import cookie_file_for_url, settings
 from .db import Job, SessionLocal, utcnow
+from .platform_runtime import get_youtube_circuit
 from .redaction import sanitize_external_error
 from .security import make_token
 from .status import write_status
+from .youtube_policy import classify_youtube_error
 
 
 def _owner_cookies(owner_key: str) -> str | None:
@@ -35,6 +38,25 @@ def _proxy_for_job(url: str) -> str:
     if not _is_youtube_url(url):
         return ""
     return str(settings.youtube_proxy_url or "").strip()
+
+
+def _ensure_parent_youtube_allowed(url: str) -> None:
+    """Reject requests only while the shared cooldown is actively open."""
+    if not _is_youtube_url(url):
+        return
+    snapshot = get_youtube_circuit().snapshot()
+    if snapshot.state == "open" and time.time() < snapshot.opened_until:
+        raise RuntimeError("youtube_circuit_open")
+
+
+def _record_parent_youtube_failure(url: str, error: BaseException | str) -> None:
+    if _is_youtube_url(url):
+        get_youtube_circuit().record_failure(classify_youtube_error(error))
+
+
+def _record_parent_youtube_success(url: str) -> None:
+    if _is_youtube_url(url):
+        get_youtube_circuit().record_success()
 
 
 def _safe_failure(exc: BaseException) -> str:
@@ -142,17 +164,21 @@ def _run_extraction_with_timeout(job_id: str) -> dict[str, Any]:
 
 
 def process_job(job_id: str) -> None:
+    job_url = ""
     with SessionLocal() as database:
         job = database.get(Job, job_id)
         if not job:
             return
+        job_url = str(job.url)
         job.status = "downloading"
         job.error = None
         database.commit()
 
     write_status(job_id, "downloading", 0)
     try:
+        _ensure_parent_youtube_allowed(job_url)
         payload = _run_extraction_with_timeout(job_id)
+        _record_parent_youtube_success(job_url)
         result = dict(payload["result"])
         media_file = Path(str(payload["file_path"]))
         file_size = int(payload["file_size"])
@@ -172,6 +198,7 @@ def process_job(job_id: str) -> None:
             current.expires_at = utcnow() + timedelta(seconds=settings.file_ttl_seconds)
             database.commit()
     except Exception as exc:  # noqa: BLE001
+        _record_parent_youtube_failure(job_url, exc)
         safe = _safe_failure(exc)
         write_status(job_id, "failed", message=safe[:300])
         with SessionLocal() as database:

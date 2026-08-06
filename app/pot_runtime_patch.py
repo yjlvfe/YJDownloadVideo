@@ -2,84 +2,41 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
-from . import durable_runtime
 from . import extractor as extractor_module
-from .extractor import COMBINED_ITAGS, DownloadError, UniversalExtractor, _ytdlp_headers
-
+from .config import cookie_file_for_url, settings
+from .extractor import DownloadError, UniversalExtractor, _ytdlp_headers
+from .youtube_policy import (
+    BOT_CHECK,
+    LOGIN_REQUIRED,
+    RATE_LIMITED,
+    YouTubeCircuit,
+    classify_youtube_error,
+)
 
 _PATCHED = False
+_ORIGINAL_INIT = UniversalExtractor.__init__
 _ORIGINAL_BASE_OPTIONS = UniversalExtractor._base_ytdlp_opts
 _ORIGINAL_DOWNLOAD = UniversalExtractor.download
-_ORIGINAL_RETRYABLE = durable_runtime.is_retryable_job_error
+_ORIGINAL_INFO = UniversalExtractor._ytdlp_info
+_CIRCUIT_STORE: dict[str, object] = {}
+_CIRCUIT = YouTubeCircuit(
+    store=_CIRCUIT_STORE,
+    cooldown_seconds=settings.youtube_circuit_cooldown_seconds,
+)
 
 
-def _browser_path() -> str:
-    return os.getenv("WPC_BROWSER_BIN", "/usr/local/bin/chromium-wpc").strip() or "/usr/local/bin/chromium-wpc"
-
-
-def _provider_extractor_args() -> dict[str, dict[str, list[str]]]:
-    provider_url = os.getenv("BGUTIL_PROVIDER_URL", "http://127.0.0.1:4416").rstrip("/")
-    visitor_data = os.getenv("YOUTUBE_VISITOR_DATA", "").strip()
-    youtube_args: dict[str, list[str]] = {
-        "player_client": ["default", "mweb"],
-        "fetch_pot": ["always"],
-        "pot_trace": ["false"],
-        "use_ad_playback_context": ["true"],
-        "player_skip": ["webpage", "configs"],
-    }
-    if visitor_data:
-        youtube_args["visitor_data"] = [visitor_data]
-    return {
-        "youtube": youtube_args,
-        "youtubepot-bgutilhttp": {
-            "base_url": [provider_url],
-        },
-        "youtubepot-wpc": {
-            "browser_path": [_browser_path()],
-        },
-    }
-
-
-def _wpc_only_extractor_args() -> dict[str, dict[str, list[str]]]:
-    return {
-        "youtube": {
-            "player_client": ["mweb"],
-            "fetch_pot": ["always"],
-            "pot_trace": ["false"],
-            "use_ad_playback_context": ["true"],
-        },
-        "youtubepot-bgutilhttp": {
-            "base_url": ["http://127.0.0.1:1"],
-        },
-        "youtubepot-wpc": {
-            "browser_path": [_browser_path()],
-        },
-    }
-
-
-def _patched_base_options(
-    self: UniversalExtractor,
-    outdir: Path | str,
-    preferred: str = "best",
-) -> dict[str, Any]:
-    effective = "best" if preferred == "audio" else preferred
-    options = _ORIGINAL_BASE_OPTIONS(self, outdir, effective)
-    options["extractor_args"] = _provider_extractor_args()
-    options["js_runtimes"] = {"node": {}}
-    return options
+def get_youtube_circuit() -> YouTubeCircuit:
+    return _CIRCUIT
 
 
 def _is_youtube_url(url: str) -> bool:
     host = (urlparse(str(url or "")).hostname or "").lower()
     return host == "youtu.be" or host.endswith("youtube.com")
-
-
-def _is_shorts_url(url: str) -> bool:
-    return bool(re.search(r"(?:youtube\.com/|youtu\.be/)?shorts/[A-Za-z0-9_-]{11}", str(url or "")))
 
 
 def _canonical_youtube_url(url: str) -> str:
@@ -95,56 +52,161 @@ def _canonical_youtube_url(url: str) -> str:
     return f"https://www.youtube.com/watch?v={match.group(1)}"
 
 
-def _candidate_itag(url: str) -> int:
-    try:
-        value = (parse_qs(urlparse(str(url)).query).get("itag") or ["0"])[0]
-        return int(value)
-    except (TypeError, ValueError):
-        return 0
+def _provider_extractor_args() -> dict[str, dict[str, list[str]]]:
+    provider_url = os.getenv("BGUTIL_PROVIDER_URL", "http://127.0.0.1:4416").rstrip("/")
+    visitor_data = os.getenv("YOUTUBE_VISITOR_DATA", "").strip()
+    youtube: dict[str, list[str]] = {
+        "player_client": ["mweb"],
+        "fetch_pot": ["always"],
+        "pot_trace": ["false"],
+        "use_ad_playback_context": ["true"],
+        "player_skip": ["webpage", "configs"],
+    }
+    if visitor_data:
+        youtube["visitor_data"] = [visitor_data]
+    return {
+        "youtube": youtube,
+        "youtubepot-bgutilhttp": {"base_url": [provider_url]},
+    }
 
 
-def _live_cdp_candidates(discovery: dict[str, Any], preferred: str) -> list[Any]:
-    candidates = [
-        candidate
-        for candidate in (discovery.get("candidates") or [])
-        if str(getattr(candidate, "source", "") or "").lower() in {"cdp", "cdp-dom"}
-    ]
-    target = int(preferred) if str(preferred).isdigit() else None
-
-    def rank(candidate: Any) -> tuple[int, int, int, int, int]:
-        height = int(getattr(candidate, "height", 0) or 0)
-        combined = int(_candidate_itag(str(candidate.url)) in COMBINED_ITAGS)
-        score = int(getattr(candidate, "score", 0) or 0)
-        if target is None:
-            return combined, int(height > 0), height, score, 0
-        exact = int(height == target)
-        under = int(0 < height <= target)
-        distance = -abs(height - target) if height else -100_000
-        return exact, combined, under, distance, score
-
-    return sorted(candidates, key=rank, reverse=True)
+def _fallback_extractor_args() -> dict[str, dict[str, list[str]]]:
+    return {
+        "youtube": {
+            "player_client": ["web_safari"],
+            "fetch_pot": ["never"],
+            "player_skip": ["webpage", "configs"],
+        }
+    }
 
 
-def _media_result(
-    info: dict[str, Any],
-    directory: Path,
+def _patched_init(
+    self: UniversalExtractor,
+    cookies_file: str | None = None,
+    use_browser: bool = True,
+    progress_hook=None,
+    max_filesize: int = 0,
+    max_duration: int = 0,
+    browser_bin: str = "chromium",
+    request_timeout: int = 30,
+    proxy_url: str = "",
+    referer_headers: bool = True,
+) -> None:
+    _ORIGINAL_INIT(
+        self,
+        cookies_file=cookies_file,
+        use_browser=use_browser,
+        progress_hook=progress_hook,
+        max_filesize=max_filesize,
+        max_duration=max_duration,
+        browser_bin=browser_bin,
+        request_timeout=request_timeout,
+        referer_headers=referer_headers,
+    )
+    self.proxy_url = str(proxy_url or "").strip()
+
+
+def _youtube_format(preferred: str, mode: str) -> str | None:
+    if mode != "fallback":
+        return None
+    value = str(preferred or "best").strip().lower()
+    if value == "audio":
+        return "bestaudio/best"
+    if value.isdigit():
+        height = int(value)
+        return f"best[protocol^=m3u8][height<={height}]/best[height<={height}]/best"
+    return "best[protocol^=m3u8]/best"
+
+
+def _youtube_options(
+    self: UniversalExtractor,
+    outdir: Path | str,
     preferred: str,
-    *,
-    error_code: str,
+    mode: str,
 ) -> dict[str, Any]:
-    media_extensions = {".mp4", ".m4a", ".webm", ".mkv", ".mov", ".mp3"}
+    options = _ORIGINAL_BASE_OPTIONS(self, outdir, preferred)
+    options["extractor_args"] = (
+        _provider_extractor_args() if mode == "primary" else _fallback_extractor_args()
+    )
+    options["js_runtimes"] = {"node": {}}
+    options["retries"] = 1
+    options["fragment_retries"] = 1
+    options["concurrent_fragment_downloads"] = 1
+    options["socket_timeout"] = max(20, int(self.request_timeout))
+    options["no_warnings"] = False
+    options["http_headers"] = _ytdlp_headers()
+
+    cookie = self.cookies_file or cookie_file_for_url(str(getattr(self, "_runtime_url", "") or ""))
+    if cookie:
+        self.cookies_file = cookie
+        options["cookiefile"] = cookie
+    proxy = str(getattr(self, "proxy_url", "") or "").strip()
+    if proxy:
+        options["proxy"] = proxy
+
+    fallback_format = _youtube_format(preferred, mode)
+    if fallback_format:
+        options["format"] = fallback_format
+    return options
+
+
+def _patched_base_options(
+    self: UniversalExtractor,
+    outdir: Path | str,
+    preferred: str = "best",
+) -> dict[str, Any]:
+    active_url = str(getattr(self, "_runtime_url", "") or "")
+    if not _is_youtube_url(active_url):
+        return _ORIGINAL_BASE_OPTIONS(self, outdir, preferred)
+    return _youtube_options(self, outdir, preferred, "primary")
+
+
+def _latest_media_file(directory: Path) -> Path | None:
+    media_suffixes = {".mp4", ".m4a", ".webm", ".mkv", ".mov", ".mp3"}
     files = [
         path
         for path in directory.rglob("*")
-        if path.is_file() and path.suffix.lower() in media_extensions
+        if path.is_file()
+        and path.suffix.lower() in media_suffixes
+        and not path.name.endswith((".part", ".ytdl", ".temp"))
     ]
-    if not files:
-        raise DownloadError(f"{error_code}: no media file was created")
-    path = max(files, key=lambda item: item.stat().st_mtime)
+    return max(files, key=lambda path: path.stat().st_mtime) if files else None
+
+
+def _download_youtube_attempt(
+    self: UniversalExtractor,
+    url: str,
+    outdir: Path,
+    preferred: str,
+    mode: str,
+) -> dict[str, Any]:
+    from yt_dlp import YoutubeDL
+
+    attempt_dir = Path(outdir) / f"youtube-{mode}"
+    shutil.rmtree(attempt_dir, ignore_errors=True)
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+    options = _youtube_options(self, attempt_dir, preferred, mode)
+    options["outtmpl"] = str(attempt_dir / "%(title).120s.%(ext)s")
+
+    try:
+        with YoutubeDL(options) as ydl:
+            extracted = ydl.extract_info(url, download=True)
+    except Exception as exc:  # noqa: BLE001
+        shutil.rmtree(attempt_dir, ignore_errors=True)
+        raise DownloadError(classify_youtube_error(exc)) from exc
+
+    info = extracted if isinstance(extracted, dict) else {}
+    path = _latest_media_file(attempt_dir)
+    if path is None:
+        raise DownloadError("youtube_no_media_file")
     if not extractor_module._has_audio(path):
-        raise DownloadError(f"{error_code}: output has no audio")
+        raise DownloadError("youtube_output_without_audio")
     if preferred != "audio" and not extractor_module._has_video(path):
-        raise DownloadError(f"{error_code}: output has no video")
+        raise DownloadError("youtube_output_without_video")
+    if self.max_duration and info.get("duration") and info["duration"] > self.max_duration:
+        raise DownloadError("مدة الفيديو تتجاوز الحد المسموح")
+    if self.max_filesize and path.stat().st_size > self.max_filesize:
+        raise DownloadError("حجم الفيديو يتجاوز الحد المسموح")
     return {
         "path": str(path),
         "title": info.get("title") or "",
@@ -154,180 +216,8 @@ def _media_result(
     }
 
 
-def _height_selector(preferred: str, *, hls: bool) -> str:
-    protocol = "[protocol^=m3u8]" if hls else ""
-    if str(preferred).isdigit():
-        height = int(preferred)
-        return f"best{protocol}[height<={height}]/best[height<={height}]/best"
-    return f"best{protocol}/best" if hls else "bestvideo*+bestaudio/best"
-
-
-def _download_youtube_lightweight(
-    self: UniversalExtractor,
-    url: str,
-    outdir: Path,
-    preferred: str,
-) -> dict[str, Any]:
-    """Download Shorts without launching WPC's headed Chromium.
-
-    These clients currently do not require a GVS token for the selected paths:
-    web_safari HLS first, then embeddable/VR clients. Every attempt is bounded
-    and validated with ffprobe before it can be returned.
-    """
-    from yt_dlp import YoutubeDL
-
-    effective = "best" if preferred == "audio" else preferred
-    attempts = (
-        ("web_safari", True),
-        ("web_embedded", False),
-        ("android_vr", False),
-    )
-    errors: list[str] = []
-    for client, hls in attempts:
-        attempt_dir = Path(outdir) / f"light-{client}"
-        attempt_dir.mkdir(parents=True, exist_ok=True)
-        options = _ORIGINAL_BASE_OPTIONS(self, attempt_dir, effective)
-        options["extractor_args"] = {
-            "youtube": {
-                "player_client": [client],
-                "fetch_pot": ["never"],
-                "player_skip": ["webpage", "configs"],
-            }
-        }
-        options["js_runtimes"] = {"node": {}}
-        options["format"] = _height_selector(effective, hls=hls)
-        options["outtmpl"] = str(attempt_dir / "%(title).120s.%(ext)s")
-        options["retries"] = 1
-        options["fragment_retries"] = 1
-        options["socket_timeout"] = 25
-        try:
-            with YoutubeDL(options) as ydl:
-                info = ydl.extract_info(url, download=True)
-            if not isinstance(info, dict):
-                raise DownloadError("no metadata returned")
-            return _media_result(
-                info,
-                attempt_dir,
-                effective,
-                error_code="youtube_lightweight_failed",
-            )
-        except Exception as exc:  # noqa: BLE001
-            errors.append(f"{client}: {str(exc)[:120]}")
-    raise DownloadError("youtube_lightweight_failed: " + " / ".join(errors))
-
-
-def _download_youtube_with_wpc(
-    self: UniversalExtractor,
-    url: str,
-    outdir: Path,
-    preferred: str,
-) -> dict[str, Any]:
-    from yt_dlp import YoutubeDL
-
-    effective = "best" if preferred == "audio" else preferred
-    attempt_dir = Path(outdir) / "wpc"
-    attempt_dir.mkdir(parents=True, exist_ok=True)
-    options = _ORIGINAL_BASE_OPTIONS(self, attempt_dir, effective)
-    options["extractor_args"] = _wpc_only_extractor_args()
-    options["js_runtimes"] = {"node": {}}
-    options["outtmpl"] = str(attempt_dir / "%(title).120s.%(ext)s")
-    options["retries"] = 1
-    options["fragment_retries"] = 1
-    try:
-        with YoutubeDL(options) as ydl:
-            info = ydl.extract_info(url, download=True)
-        if not isinstance(info, dict):
-            raise DownloadError("youtube_wpc_failed: no metadata returned")
-        return _media_result(
-            info,
-            attempt_dir,
-            effective,
-            error_code="youtube_wpc_failed",
-        )
-    except DownloadError:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        raise DownloadError(f"youtube_wpc_failed: {str(exc)[:240]}") from exc
-
-
-def _download_cdp_fallback(
-    self: UniversalExtractor,
-    url: str,
-    outdir: Path,
-    preferred: str,
-    previous_error: BaseException,
-) -> dict[str, Any]:
-    try:
-        discovery = self.discover(url, skip_ytdlp=True)
-    except DownloadError as browser_error:
-        raise DownloadError(
-            f"youtube_browser_no_media: {str(previous_error)[:160]} / {str(browser_error)[:120]}"
-        ) from previous_error
-    candidates = _live_cdp_candidates(discovery, preferred)
-    if not candidates:
-        raise DownloadError(
-            f"youtube_browser_no_media: {str(previous_error)[:200]}"
-        ) from previous_error
-
-    last_error = str(previous_error)
-    for index, candidate in enumerate(candidates[:8]):
-        attempt_dir = Path(outdir) / f"cdp-{index}"
-        attempt_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            result = self._download_candidate(candidate, attempt_dir, referer=url)
-            media_path = Path(result["path"])
-            if not extractor_module._has_audio(media_path):
-                last_error = "cdp candidate has no audio"
-                continue
-            if not extractor_module._has_video(media_path):
-                last_error = "cdp candidate has no video"
-                continue
-            return result
-        except Exception as candidate_error:  # noqa: BLE001
-            last_error = str(candidate_error)[:200]
-    raise DownloadError(
-        f"youtube_browser_fallback_failed: {last_error}"
-    ) from previous_error
-
-
-def _download_youtube_with_live_browser_fallback(
-    self: UniversalExtractor,
-    url: str,
-    outdir: Path,
-    preferred: str,
-    *,
-    shorts_mode: bool = False,
-) -> dict[str, Any]:
-    effective = "best" if preferred == "audio" else preferred
-    if shorts_mode:
-        try:
-            result = _download_youtube_lightweight(self, url, outdir, effective)
-        except DownloadError as lightweight_error:
-            result = _download_cdp_fallback(
-                self,
-                url,
-                outdir,
-                effective,
-                lightweight_error,
-            )
-    else:
-        try:
-            result = self._download_ytdlp(url, outdir, effective)
-        except DownloadError as primary_error:
-            try:
-                result = _download_youtube_with_wpc(self, url, outdir, effective)
-            except DownloadError as wpc_error:
-                result = _download_cdp_fallback(
-                    self,
-                    url,
-                    outdir,
-                    effective,
-                    wpc_error,
-                )
-
-    if preferred == "audio":
-        return self._convert_to_audio_only(result, Path(outdir))
-    return result
+def _terminal_without_fallback(classification: str) -> bool:
+    return classification in {RATE_LIMITED, BOT_CHECK, LOGIN_REQUIRED, "youtube_circuit_open"}
 
 
 def _patched_download(
@@ -337,82 +227,110 @@ def _patched_download(
     preferred: str = "best",
     title_hint: str = "",
 ) -> dict[str, Any]:
-    outdir = Path(outdir)
-    outdir.mkdir(parents=True, exist_ok=True)
-    if _is_youtube_url(url):
-        shorts_mode = _is_shorts_url(url)
-        canonical_url = _canonical_youtube_url(url)
-        return _download_youtube_with_live_browser_fallback(
-            self,
-            canonical_url,
-            outdir,
-            preferred,
-            shorts_mode=shorts_mode,
-        )
-    if preferred != "audio":
+    if not _is_youtube_url(url):
         return _ORIGINAL_DOWNLOAD(self, url, outdir, preferred, title_hint)
-    video_result = _ORIGINAL_DOWNLOAD(self, url, outdir, "best", title_hint)
-    return self._convert_to_audio_only(video_result, outdir)
+    if not _CIRCUIT.allow_request():
+        raise DownloadError("youtube_circuit_open")
+
+    canonical = _canonical_youtube_url(url)
+    previous_url = getattr(self, "_runtime_url", None)
+    self._runtime_url = canonical
+    if not self.cookies_file:
+        self.cookies_file = cookie_file_for_url(canonical)
+    try:
+        try:
+            result = _download_youtube_attempt(self, canonical, Path(outdir), preferred, "primary")
+        except DownloadError as primary_error:
+            classification = classify_youtube_error(primary_error)
+            if _terminal_without_fallback(classification):
+                _CIRCUIT.record_failure(classification)
+                raise DownloadError(classification) from primary_error
+            try:
+                result = _download_youtube_attempt(
+                    self,
+                    canonical,
+                    Path(outdir),
+                    preferred,
+                    "fallback",
+                )
+            except DownloadError as fallback_error:
+                final_classification = classify_youtube_error(fallback_error)
+                _CIRCUIT.record_failure(final_classification)
+                raise DownloadError(final_classification) from fallback_error
+        _CIRCUIT.record_success()
+        return result
+    finally:
+        if previous_url is None:
+            try:
+                delattr(self, "_runtime_url")
+            except AttributeError:
+                pass
+        else:
+            self._runtime_url = previous_url
 
 
-def _patched_ytdlp_info(self: UniversalExtractor, url: str) -> dict[str, Any]:
+def _extract_youtube_info(self: UniversalExtractor, url: str, mode: str) -> dict[str, Any]:
     from yt_dlp import YoutubeDL
 
-    source_url = _canonical_youtube_url(url) if _is_youtube_url(url) else url
-    options: dict[str, Any] = {
-        "quiet": True,
-        "skip_download": True,
-        "noplaylist": True,
-        "no_warnings": True,
-        "socket_timeout": 45,
-        "http_headers": _ytdlp_headers(),
-        "extractor_args": _provider_extractor_args(),
-        "js_runtimes": {"node": {}},
-    }
-    if _is_shorts_url(url):
-        options["extractor_args"] = {
-            "youtube": {
-                "player_client": ["web_safari", "web_embedded", "android_vr"],
-                "fetch_pot": ["never"],
-                "player_skip": ["webpage", "configs"],
-            }
-        }
-    if self.cookies_file:
-        options["cookiefile"] = self.cookies_file
+    options = _youtube_options(self, Path("/tmp"), "best", mode)
+    options.update({"skip_download": True, "noplaylist": True})
+    options.pop("outtmpl", None)
+    options.pop("progress_hooks", None)
+    options.pop("postprocessors", None)
     with YoutubeDL(options) as ydl:
-        info = ydl.extract_info(source_url, download=False)
-    if not info:
-        raise DownloadError("yt-dlp لم يُرجع بيانات")
+        info = ydl.extract_info(url, download=False)
+    if not isinstance(info, dict):
+        raise DownloadError("youtube_no_metadata")
     if info.get("is_live"):
-        raise DownloadError("البث المباشر غير مدعوم في هذا المسار")
+        raise DownloadError("البث المباشر غير مدعوم")
     return info
 
 
-def _patched_retryable(message: str) -> bool:
-    lowered = str(message or "").lower()
-    terminal_markers = (
-        "http error 403",
-        "403 forbidden",
-        "youtube_lightweight_failed",
-        "youtube_wpc_failed",
-        "youtube_browser_no_media",
-        "youtube_browser_fallback_failed",
-        "unable to obtain file audio codec",
-        "postprocessing:",
-    )
-    if any(marker in lowered for marker in terminal_markers):
-        return False
-    return _ORIGINAL_RETRYABLE(message)
+def _patched_ytdlp_info(self: UniversalExtractor, url: str) -> dict[str, Any]:
+    if not _is_youtube_url(url):
+        return _ORIGINAL_INFO(self, url)
+    if not _CIRCUIT.allow_request():
+        raise DownloadError("youtube_circuit_open")
+
+    canonical = _canonical_youtube_url(url)
+    previous_url = getattr(self, "_runtime_url", None)
+    self._runtime_url = canonical
+    if not self.cookies_file:
+        self.cookies_file = cookie_file_for_url(canonical)
+    try:
+        try:
+            info = _extract_youtube_info(self, canonical, "primary")
+        except Exception as primary_error:  # noqa: BLE001
+            classification = classify_youtube_error(primary_error)
+            if _terminal_without_fallback(classification):
+                _CIRCUIT.record_failure(classification)
+                raise DownloadError(classification) from primary_error
+            try:
+                info = _extract_youtube_info(self, canonical, "fallback")
+            except Exception as fallback_error:  # noqa: BLE001
+                final_classification = classify_youtube_error(fallback_error)
+                _CIRCUIT.record_failure(final_classification)
+                raise DownloadError(final_classification) from fallback_error
+        _CIRCUIT.record_success()
+        return info
+    finally:
+        if previous_url is None:
+            try:
+                delattr(self, "_runtime_url")
+            except AttributeError:
+                pass
+        else:
+            self._runtime_url = previous_url
 
 
 def install() -> None:
     global _PATCHED
     if _PATCHED:
         return
+    UniversalExtractor.__init__ = _patched_init
     UniversalExtractor._base_ytdlp_opts = _patched_base_options
     UniversalExtractor.download = _patched_download
     UniversalExtractor._ytdlp_info = _patched_ytdlp_info
-    durable_runtime.is_retryable_job_error = _patched_retryable
     _PATCHED = True
 
 

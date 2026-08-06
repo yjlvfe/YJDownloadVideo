@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import String, Integer, BigInteger, DateTime, Text, create_engine
+from sqlalchemy import String, Integer, BigInteger, DateTime, Text, create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from .config import settings
 
@@ -22,7 +22,19 @@ class Job(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
-engine = create_engine(settings.database_url.replace("+aiosqlite", ""), connect_args={"check_same_thread": False})
+engine = create_engine(settings.database_url.replace("+aiosqlite", ""),
+                       connect_args={"check_same_thread": False})
+
+# 🛡️ 4 عمليات (web/worker/bot/cleanup) تشارك نفس ملف SQLite — WAL + مهلة قفل طويلة
+# يمنعان "database is locked" تحت أي ضغط
+@event.listens_for(engine, "connect")
+def _sqlite_pragmas(dbapi_conn, _record):
+    cur = dbapi_conn.cursor()
+    cur.execute("PRAGMA journal_mode=WAL")
+    cur.execute("PRAGMA busy_timeout=30000")
+    cur.execute("PRAGMA synchronous=NORMAL")
+    cur.close()
+
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 def init_db(): Base.metadata.create_all(engine)
 
@@ -30,11 +42,3 @@ def utcnow(): return datetime.now(timezone.utc)
 
 def get_job(job_id):
     with SessionLocal() as db: return db.get(Job, job_id)
-
-def save_job(job):
-    with SessionLocal() as db: db.merge(job); db.commit()
-
-def delete_job(job_id):
-    with SessionLocal() as db:
-        obj=db.get(Job, job_id)
-        if obj: db.delete(obj); db.commit()

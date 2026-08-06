@@ -34,3 +34,25 @@ def test_normalize_empty_has_no_fake_qualities():
     out = normalize_formats([])
     ids = [f["id"] for f in out]
     assert ids == ["best", "audio"]
+
+
+def test_normalize_no_duplicate_ids():
+    """دقة واحدة لكل ارتفاع ولو تعددت الامتدادات — كان يعطي زرين بنفس format_id."""
+    out = normalize_formats([
+        {"id": "137", "label": "1080p / mp4", "size": 100},
+        {"id": "248", "label": "1080p / webm", "size": 90},
+        {"id": "18", "label": "360p / mp4", "size": 10},
+    ])
+    ids = [f["id"] for f in out]
+    assert ids == ["best", "1080", "360", "audio"]
+    assert ids.count("1080") == 1
+
+
+def test_normalize_accepts_more_label_shapes():
+    """صيغ إضافية: 1080p60 / 2160p / بلا امتداد."""
+    out = normalize_formats([
+        {"id": "a", "label": "1080p60", "size": 10},
+        {"id": "b", "label": "2160p", "size": 20},
+    ])
+    ids = [f["id"] for f in out]
+    assert "1080" in ids and "2160" in ids

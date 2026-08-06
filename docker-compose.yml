@@ -4,7 +4,8 @@ services:
     env_file: .env
     environment:
       REDIS_URL: redis://redis:6379/0
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-proxy-headers
+    restart: unless-stopped
     ports:
       - "8000:8000"
     volumes:
@@ -18,17 +19,20 @@ services:
     environment:
       REDIS_URL: redis://redis:6379/0
     command: python -m app.worker
+    restart: unless-stopped
     volumes:
       - ./data:/app/data
       - ./storage:/app/storage
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
   bot:
     build: .
     env_file: .env
     environment:
       REDIS_URL: redis://redis:6379/0
     command: python -m app.bot
+    restart: unless-stopped
     volumes:
       - ./data:/app/data
       - ./storage:/app/storage
@@ -40,6 +44,7 @@ services:
     environment:
       REDIS_URL: redis://redis:6379/0
     command: python -m app.cleanup
+    restart: unless-stopped
     volumes:
       - ./data:/app/data
       - ./storage:/app/storage
@@ -48,6 +53,11 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     volumes:
       - redis_data:/data
   # Local Telegram Bot API Server — يرفع حد إرسال البوت إلى 2GB (بدون تسجيل دخول)

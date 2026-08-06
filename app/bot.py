@@ -16,6 +16,16 @@ WEBHOOK_MODE = bool(os.environ.get("VERCEL")) or settings.vercel_mode
 
 PREFS = load_user_prefs()  # user_id(str) -> "ask" | "audio" | "video"
 
+# مراجع قوية لمهام الخلفية — بدونها قد تُجمع المهمة (GC) في منتصف التسليم فتُلغى صامتة
+_TASKS: set = set()
+
+
+def _spawn(coro):
+    t = asyncio.create_task(coro)
+    _TASKS.add(t)
+    t.add_done_callback(_TASKS.discard)
+    return t
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "أهلاً بك في YJDownloadVideo 🤖\n\n"
@@ -56,14 +66,29 @@ async def reset_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _create_job(user_id: int, chat_id: int, url: str, fmt: str, context,
-                      status_msg=None, queue_pos: int = 1) -> str:
-    """ينشئ مهمة — رسالة الحالة الواحدة (الأزرار نفسها) تتحول لشريط تقدم حي."""
+                      status_msg=None, queue_pos: int = 1) -> str | None:
+    """ينشئ مهمة — رسالة الحالة الواحدة (الأزرار نفسها) تتحول لشريط تقدم حي.
+
+    2026-08: مهمات البوت تدخل نفس طابور Redis (FIFO موحّد مع الويب) بدل
+    تنفيذ التحميل داخل البوت — لا خيوط متوازية بلا حد ولا OOM.
+    """
     user_key = f"tg:{user_id}"
     with SessionLocal() as db:
-        queue_pos = db.query(Job).filter(
+        active = db.query(Job).filter(
             Job.owner_key == user_key,
             Job.status.in_(["waiting", "downloading", "preparing"]),
-        ).count() + 1
+        ).count()
+        # 🛡️ الحد الفعلي لكل مستخدم (كان معرّفًا في الإعدادات وغير مفعّل)
+        if active >= settings.max_active_jobs_per_telegram_user:
+            try:
+                await context.bot.send_message(
+                    chat_id,
+                    f"⚠️ لديك {active} عمليات نشطة (الحد {settings.max_active_jobs_per_telegram_user}). "
+                    "انتظر اكتمال بعضها ثم أرسل الرابط مجددًا.")
+            except Exception:  # noqa: BLE001
+                pass
+            return None
+        queue_pos = active + 1
         job = Job(id=secrets.token_urlsafe(16), url=url, requested_format=fmt,
                   status="waiting", owner_key=user_key, source="telegram")
         db.add(job)
@@ -71,10 +96,27 @@ async def _create_job(user_id: int, chat_id: int, url: str, fmt: str, context,
         jid = job.id
     # لا رسائل تأكيد منفصلة — رسالة الحالة الواحدة تتكفل بكل شيء (قرار المستخدم 2026-08)
     if WEBHOOK_MODE:
+        # Vercel: لا Redis — تنفيذ فوري داخل العملية (خيط) ثم مراقبة
+        _spawn(asyncio.to_thread(process_job, jid))
         await watch_and_deliver(chat_id, jid, status_msg=status_msg, queue_pos=queue_pos)
     else:
-        asyncio.create_task(watch_and_deliver(chat_id, jid, status_msg=status_msg,
-                                              queue_pos=queue_pos))
+        try:
+            import redis
+            redis.Redis.from_url(settings.redis_url).rpush('yjdownload:jobs', jid)
+        except Exception:  # noqa: BLE001
+            log.exception("redis push failed")
+            with SessionLocal() as db:
+                row = db.get(Job, jid)
+                if row:
+                    row.status = "failed"
+                    row.error = "النظام مشغول حاليًا — حاول بعد قليل"
+                    db.commit()
+            try:
+                await context.bot.send_message(chat_id, "⚠️ النظام مشغول حاليًا — حاول بعد قليل.")
+            except Exception:  # noqa: BLE001
+                pass
+            return None
+        _spawn(watch_and_deliver(chat_id, jid, status_msg=status_msg, queue_pos=queue_pos))
     return jid
 
 
@@ -90,6 +132,10 @@ async def receive_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_key = f"tg:{update.effective_user.id}"
     try:
         f = await doc.get_file()
+        # 🛡️ فحص الحجم قبل التنزيل (كان يُنزَّل كاملًا ثم يُحذف — حتى 2GB كتابة مهدرة)
+        if (f.file_size or 0) > 2 * 1024 * 1024:
+            await update.message.reply_text("⚠️ الملف كبير جدًا (الحد 2MB).")
+            return
         dest = settings.cookies_path / f"{user_key}.txt"
         await f.download_to_drive(str(dest))
         if dest.stat().st_size > 2 * 1024 * 1024:
@@ -414,7 +460,7 @@ async def watch_and_deliver(chat_id: int, jid: str, status_msg=None, queue_pos: 
     """رسالة حالة واحدة حية: طابور ← تحميل % كل ثانية ← رفع % كل ثانية ← الملف ← تختفي.
 
     (قرار المستخدم 2026-08: بلا رسائل كثيرة — نفس رسالة الأزرار تتحول وتتحدث كل ثانية،
-    وبعد الوصول يُحذف الشريط ويبقى المقطع وحده.)
+    وبعد الوصول يُحذف الشريط ويبقى المقطع وحده. التحميل يتم في العامل عبر طابور Redis.)
     """
     up_state = {"pct": 0}
 
@@ -422,131 +468,139 @@ async def watch_and_deliver(chat_id: int, jid: str, status_msg=None, queue_pos: 
         up_state["pct"] = int(current / total * 100) if total else 0
 
     bot = _bot_instance(progress_cb=sync_up_cb)
-    bar = None
-    if status_msg is not None:
-        # نفس رسالة الأزرار تتحول لشريط الحالة
-        bar = await _edit_progress(status_msg,
-                                   f"⏳ في الطابور — موضعك #{queue_pos}" if queue_pos > 1
-                                   else f"⬇️ جارٍ التحميل [{_progress_bar(0)}] 0%")
-    if bar is None:
-        try:
-            bar = await bot.send_message(chat_id,
-                                         f"⏳ في الطابور — موضعك #{queue_pos}" if queue_pos > 1
-                                         else f"⬇️ جارٍ التحميل [{_progress_bar(0)}] 0%")
-        except Exception:  # noqa: BLE001
-            pass
+    try:
+        bar = None
+        if status_msg is not None:
+            # نفس رسالة الأزرار تتحول لشريط الحالة
+            bar = await _edit_progress(status_msg,
+                                       f"⏳ في الطابور — موضعك #{queue_pos}" if queue_pos > 1
+                                       else f"⬇️ جارٍ التحميل [{_progress_bar(0)}] 0%")
+        if bar is None:
+            try:
+                bar = await bot.send_message(chat_id,
+                                             f"⏳ في الطابور — موضعك #{queue_pos}" if queue_pos > 1
+                                             else f"⬇️ جارٍ التحميل [{_progress_bar(0)}] 0%")
+            except Exception:  # noqa: BLE001
+                pass
 
-    last_text = ""
-    task = asyncio.create_task(asyncio.to_thread(process_job, jid))
-    while not task.done():
-        st = read_status(jid)
-        if st and st.get("stage") in ("downloading", "preparing"):
-            if st["stage"] == "preparing":
-                text = "🔧 جارٍ دمج الصوت والفيديو…"
+        # انتظار انتهاء المعالجة: الحالة من القاعدة (الطابور/التحميل) + النسبة من status.json
+        last_text = ""
+        while True:
+            with SessionLocal() as db:
+                j = db.get(Job, jid)
+                state = j.status if j else "failed"
+            if state in ("waiting",):
+                text = f"⏳ في الطابور — موضعك #{queue_pos}"
+            elif state in ("downloading", "preparing"):
+                st = read_status(jid)
+                if st and st.get("stage") == "preparing":
+                    text = "🔧 جارٍ دمج الصوت والفيديو…"
+                else:
+                    pct = (st or {}).get("pct", 0)
+                    text = f"⬇️ جارٍ التحميل [{_progress_bar(pct)}] {pct}%"
             else:
-                pct = st.get("pct", 0)
-                text = f"⬇️ جارٍ التحميل [{_progress_bar(pct)}] {pct}%"
+                break
             if text != last_text and bar is not None:
                 bar = await _edit_progress(bar, text)
                 last_text = text
-        await asyncio.sleep(1)
-    try:
-        await task
-    except Exception as e:  # noqa: BLE001
-        log.exception("worker failed")
-        if bar is not None:
-            bar = await _edit_progress(bar, f"❌ خطأ أثناء المعالجة: {str(e)[:200]}")
+            await asyncio.sleep(1)
 
-    with SessionLocal() as db:
-        j = db.get(Job, jid)
-        state = j.status if j else "failed"
-        path, size, token, title = (j.file_path, j.file_size, j.download_token, j.title) if j else (None, None, None, None)
-        err = j.error if j else None
-        is_audio = (j.requested_format == "audio") if j else False
+        with SessionLocal() as db:
+            j = db.get(Job, jid)
+            state = j.status if j else "failed"
+            path, size, token, title = (j.file_path, j.file_size, j.download_token, j.title) if j else (None, None, None, None)
+            err = j.error if j else None
+            is_audio = (j.requested_format == "audio") if j else False
 
-    if state == "ready" and path and size is not None:
-        if size > settings.telegram_send_limit_bytes:
-            # أكبر من 2GB — لا يمكن إرساله إطلاقًا
+        if state == "ready" and path and size is not None:
+            if size > settings.telegram_send_limit_bytes:
+                # أكبر من 2GB — لا يمكن إرساله إطلاقًا
+                if bar is not None:
+                    bar = await _edit_progress(bar, f"✅ تم التحميل ({size / 1024 / 1024:.0f}MB) — يتجاوز حد 2GB.\nرابط التحميل: {settings.base_url}/download/{token}")
+                else:
+                    await bot.send_message(chat_id, f"✅ تم التحميل ({size / 1024 / 1024:.0f}MB) — يتجاوز حد 2GB.\nرابط التحميل: {settings.base_url}/download/{token}")
+                return
+            # ← مرحلة الرفع: نفس الرسالة تتحول لشريط رفع
             if bar is not None:
-                bar = await _edit_progress(bar, f"✅ تم التحميل ({size / 1024 / 1024:.0f}MB) — يتجاوز حد 2GB.\nرابط التحميل: {settings.base_url}/download/{token}")
-            else:
-                await bot.send_message(chat_id, f"✅ تم التحميل ({size / 1024 / 1024:.0f}MB) — يتجاوز حد 2GB.\nرابط التحميل: {settings.base_url}/download/{token}")
-            return
-        # ← مرحلة الرفع: نفس الرسالة تتحول لشريط رفع
-        if bar is not None:
-            bar = await _edit_progress(bar, f"✅ تم التحميل ({size / 1024 / 1024:.0f}MB) — ⬆️ جارٍ الرفع [{_progress_bar(0)}] 0%")
-        up_state["pct"] = 0
-        caption = (title or "الفيديو")[:1024]
+                bar = await _edit_progress(bar, f"✅ تم التحميل ({size / 1024 / 1024:.0f}MB) — ⬆️ جارٍ الرفع [{_progress_bar(0)}] 0%")
+            up_state["pct"] = 0
+            caption = (title or "الفيديو")[:1024]
 
-        async def do_send():
-            # InputFile(read_file_handle=False): يبقي الملف متدفقًا (بدل قراءته كاملًا في الذاكرة)
-            # — ضروري لتتبع التقدم ولتفادي استهلاك 2GB رام للملفات الكبيرة
-            from telegram import InputFile
-            if is_audio:
-                with open(path, "rb") as f:
-                    # الصوت: اسم المقطع في الوصف
-                    await bot.send_audio(chat_id, InputFile(f, read_file_handle=False), caption=f"🎵 {caption}")
-            else:
-                # 🎬 معاينة + بيانات حقيقية: بدونها يعرض تيليجرام الفيديو كملف (duration=0)
-                # لأن خادم Bot API المحلي لا يعالج الملفات تلقائيًا — نجهّزها بأنفسنا
-                meta = _video_meta(path, Path(path).parent)
-                thumb_path = meta.pop("thumbnail", None)
-                with open(path, "rb") as f:
-                    if thumb_path:
-                        with open(thumb_path, "rb") as tf:
+            async def do_send():
+                # InputFile(read_file_handle=False): يبقي الملف متدفقًا (بدل قراءته كاملًا في الذاكرة)
+                # — ضروري لتتبع التقدم ولتفادي استهلاك 2GB رام للملفات الكبيرة
+                from telegram import InputFile
+                if is_audio:
+                    with open(path, "rb") as f:
+                        # الصوت: اسم المقطع في الوصف
+                        await bot.send_audio(chat_id, InputFile(f, read_file_handle=False), caption=f"🎵 {caption}")
+                else:
+                    # 🎬 معاينة + بيانات حقيقية: بدونها يعرض تيليجرام الفيديو كملف (duration=0)
+                    # لأن خادم Bot API المحلي لا يعالج الملفات تلقائيًا — نجهّزها بأنفسنا
+                    meta = _video_meta(path, Path(path).parent)
+                    thumb_path = meta.pop("thumbnail", None)
+                    with open(path, "rb") as f:
+                        if thumb_path:
+                            with open(thumb_path, "rb") as tf:
+                                await bot.send_video(
+                                    chat_id, InputFile(f, read_file_handle=False),
+                                    thumbnail=InputFile(tf),
+                                    supports_streaming=True, **meta)
+                        else:
                             await bot.send_video(
                                 chat_id, InputFile(f, read_file_handle=False),
-                                thumbnail=InputFile(tf),
                                 supports_streaming=True, **meta)
-                    else:
-                        await bot.send_video(
-                            chat_id, InputFile(f, read_file_handle=False),
-                            supports_streaming=True, **meta)
 
-        send_task = asyncio.create_task(do_send())
-        last_up = -1
-        while not send_task.done():
-            pct = up_state["pct"]
-            if pct != last_up and bar is not None:
-                bar = await _edit_progress(bar, f"⬆️ جارٍ الرفع [{_progress_bar(pct)}] {pct}%")
-                last_up = pct
-            await asyncio.sleep(1)
-        try:
-            await send_task
-        except Exception as e:  # noqa: BLE001
-            log.exception("send failed, falling back to link")
-            if bar is not None:
-                bar = await _edit_progress(bar, f"⚠️ تعذر الإرسال المباشر ({str(e)[:100]}).\nرابط التحميل: {settings.base_url}/download/{token}")
-            else:
-                await bot.send_message(chat_id, f"⚠️ تعذر الإرسال المباشر ({str(e)[:100]}).\nرابط التحميل: {settings.base_url}/download/{token}")
-            return
-        # 🧹 قرار المستخدم (2026-08): بعد وصول المقطع يُحذف شريط الحالة — يبقى المقطع وحده فقط
-        if bar is not None:
+            send_task = asyncio.create_task(do_send())
+            last_up = -1
+            while not send_task.done():
+                pct = up_state["pct"]
+                if pct != last_up and bar is not None:
+                    bar = await _edit_progress(bar, f"⬆️ جارٍ الرفع [{_progress_bar(pct)}] {pct}%")
+                    last_up = pct
+                await asyncio.sleep(1)
             try:
-                await bar.delete()
-            except Exception:  # noqa: BLE001
-                pass
-        # 🗑️ الحذف الفوري — نقطة عدم التكدس: الملف يُمحى لحظة وصوله للمستخدم
-        if j and j.source == "telegram":
-            delete_job_files(j)
-        clear_status(jid)
-        return
-    elif state == "failed":
-        reason = ""
-        if err:
-            low = err.lower()
-            if any(k in low for k in ("drm", "widevine", "playready", "fairplay", "license", "encrypt")):
-                reason = "\n🔒 السبب: هذا المحتوى مشفّر بـ DRM — لا يمكن تحميله (نظام حماية قانوني)."
-            elif any(k in low for k in ("login", "auth", "cookie", "403", "forbidden", "membership", "subscription", "premium", "sign in")):
-                reason = f"\n🔐 السبب: الموقع يطلب تسجيل دخول/اشتراك. الحل: حمّل بملف كوكيز جلستك (أرسل الملف مع الرابط).\nالتفاصيل: {err[:200]}"
-            elif any(k in low for k in ("live", "بث")):
-                reason = "\n📡 السبب: هذا بث مباشر وليس مقطعًا مسجلًا."
+                await send_task
+            except Exception as e:  # noqa: BLE001
+                log.exception("send failed, falling back to link")
+                if bar is not None:
+                    bar = await _edit_progress(bar, f"⚠️ تعذر الإرسال المباشر ({str(e)[:100]}).\nرابط التحميل: {settings.base_url}/download/{token}")
+                else:
+                    await bot.send_message(chat_id, f"⚠️ تعذر الإرسال المباشر ({str(e)[:100]}).\nرابط التحميل: {settings.base_url}/download/{token}")
+                return
+            # 🧹 قرار المستخدم (2026-08): بعد وصول المقطع يُحذف شريط الحالة — يبقى المقطع وحده فقط
+            if bar is not None:
+                try:
+                    await bar.delete()
+                except Exception:  # noqa: BLE001
+                    pass
+            # 🗑️ الحذف الفوري — نقطة عدم التكدس: الملف يُمحى لحظة وصوله للمستخدم
+            if j and j.source == "telegram":
+                delete_job_files(j)
+            clear_status(jid)
+            return
+        elif state == "failed":
+            reason = ""
+            if err:
+                low = err.lower()
+                if any(k in low for k in ("drm", "widevine", "playready", "fairplay", "license", "encrypt")):
+                    reason = "\n🔒 السبب: هذا المحتوى مشفّر بـ DRM — لا يمكن تحميله (نظام حماية قانوني)."
+                elif any(k in low for k in ("login", "auth", "cookie", "403", "forbidden", "membership", "subscription", "premium", "sign in")):
+                    reason = f"\n🔐 السبب: الموقع يطلب تسجيل دخول/اشتراك. الحل: حمّل بملف كوكيز جلستك (أرسل الملف مع الرابط).\nالتفاصيل: {err[:200]}"
+                elif any(k in low for k in ("live", "بث")):
+                    reason = "\n📡 السبب: هذا بث مباشر وليس مقطعًا مسجلًا."
+                else:
+                    reason = f"\n📋 التفاصيل التقنية: {err[:300]}"
+            if bar is not None:
+                bar = await _edit_progress(bar, f"❌ فشلت المعالجة.{reason}\n\nأرسل الرابط هنا وسأشخّصه لك.")
             else:
-                reason = f"\n📋 التفاصيل التقنية: {err[:300]}"
-        if bar is not None:
-            bar = await _edit_progress(bar, f"❌ فشلت المعالجة.{reason}\n\nأرسل الرابط هنا وسأشخّصه لك.")
-        else:
-            await bot.send_message(chat_id, f"❌ فشلت المعالجة.{reason}\n\nأرسل الرابط هنا وسأشخّصه لك.")
+                await bot.send_message(chat_id, f"❌ فشلت المعالجة.{reason}\n\nأرسل الرابط هنا وسأشخّصه لك.")
+    finally:
+        # 🧹 إغلاق عميل الرفع (AsyncClient + pool الاتصالات) — كان يتسرب لكل وظيفة
+        try:
+            await bot.shutdown()
+        except Exception:  # noqa: BLE001
+            pass
 
 def build_application() -> Application:
     """يبني تطبيق البوت (مشترك بين polling و Webhook)."""

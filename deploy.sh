@@ -26,6 +26,12 @@ fi
 # 2) إعداد .env إن لم يوجد
 if [ ! -f .env ]; then
   cp .env.example .env
+  # 🔐 SECRET_KEY عشوائي تلقائيًا — ممنوع الإقلاع بالقالب الضعيف
+  if grep -qE "^SECRET_KEY=change-this" .env; then
+    NEW_KEY=$(openssl rand -hex 32)
+    sed -i "s|^SECRET_KEY=change-this-to-a-long-random-secret$|SECRET_KEY=$NEW_KEY|" .env
+    echo "🔐 تم توليد SECRET_KEY عشوائي."
+  fi
   echo "⚠️ أنشأنا .env من القالب — عدّل توكن البوت ومفاتيح API ثم أعد التشغيل: docker compose up -d"
 fi
 

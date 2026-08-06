@@ -30,7 +30,8 @@ from urllib.parse import urljoin, urlparse, unquote
 
 import httpx
 
-from .config import ffmpeg_location
+from .config import ffmpeg_location, settings
+from .security import is_private_host
 
 # ---------------------------------------------------------------------------
 # ثوابت
@@ -157,12 +158,14 @@ def _ytdlp_headers() -> dict:
 class UniversalExtractor:
     """المحرك الشامل: أي رابط ← فيديو ← ملف."""
 
-    def __init__(self, cookies_file: str | None = None, use_browser: bool = True,
+    def __init__(self, cookies_file: str | None = None, use_browser: bool | None = None,
                  progress_hook=None, max_filesize: int = 0, max_duration: int = 0,
                  browser_bin: str = "chromium", request_timeout: int = 30,
                  referer_headers: bool = True):
         self.cookies_file = cookies_file
-        self.use_browser = use_browser
+        # None = اتبع الإعداد العام (enable_browser_capture) — المتصفح معطّل افتراضيًا
+        # (أسباب: ذاكرة عالية + طلبات إضافية تسرّع رفع علم الروبوت على يوتيوب)
+        self.use_browser = settings.enable_browser_capture if use_browser is None else use_browser
         self.progress_hook = progress_hook
         self.max_filesize = max_filesize
         self.max_duration = max_duration
@@ -218,19 +221,31 @@ class UniversalExtractor:
 
     def download(self, url: str, outdir: Path, preferred: str = "best",
                  title_hint: str = "") -> dict:
-        """ينزّل الفيديو من أي رابط ويعيد {path,title,duration,thumbnail,ext}."""
+        """ينزّل الفيديو من أي رابط ويعيد {path,title,duration,thumbnail,ext}.
+
+        التدفق المبسّط (2026-08): محاولة yt-dlp نظيفة واحدة ← L4 لخوادم يوتيوب
+        البديلة عند الحظر (بلا لمس يوتيوب أصلًا) ← اكتشاف L2/L3 وتحميل أفضل
+        مرشح سليم. لا تعدد عملاء ولا محاولات متكررة — كل طلب إضافي يرفع
+        علم الروبوت.
+        """
         outdir = Path(outdir)
         outdir.mkdir(parents=True, exist_ok=True)
 
         # L1: yt-dlp كامل (الأقوى: دمج جودة عالية + صوت)
         try:
             return self._download_ytdlp(url, outdir, preferred)
-        except DownloadError:
-            raise
+        except DownloadError as de:
+            # يوتيوب محجوب من الخادم (فحص روبوت)؟ جرّب الخوادم البديلة قبل الاستسلام
+            if not (self._is_youtube(url) and not self.cookies_file):
+                raise
+            try:
+                return self._download_yt_fallback(url, outdir, preferred)
+            except DownloadError:
+                raise de
         except Exception as e:  # noqa: BLE001
             first_err = str(e)[:200]
 
-        # L2+L3: اكتشاف ثم تحميل أفضل مرشح (مع تحقق من وجود صوت — بعض المواقع تعطي فيديو بلا صوت)
+        # L2+L3: اكتشاف ثم تحميل أفضل مرشح سليم (لا نسلّم ملفًا ناقصًا أبدًا)
         try:
             d = self.discover(url)
             cands = d.get("candidates") or []
@@ -251,10 +266,31 @@ class UniversalExtractor:
                 except Exception as e:  # noqa: BLE001
                     last_err = str(e)[:200]
             if best_res:
-                return best_res
-            raise DownloadError(f"فشل التحميل: {last_err}")
-        except DownloadError:
-            raise
+                ok_audio = _has_audio(best_res["path"])
+                ok_video = preferred == "audio" or _has_video(best_res["path"])
+                if ok_audio and ok_video:
+                    return best_res
+                raise DownloadError(f"فشل التحميل: {last_err or 'المقطع ناقص (صوت/فيديو)'}")
+            # L4: يوتيوب محجوب (فحص روبوت) — خوادم Invidious/Piped العامة بلا كوكيز
+            if not self.cookies_file and self._is_youtube(url):
+                try:
+                    return self._download_yt_fallback(url, outdir, preferred)
+                except DownloadError:
+                    pass
+            hint = ""
+            if (("youtube" in url.lower() or "youtu.be" in url.lower())
+                    and not self.cookies_file):
+                hint = (" 💡 يوتيوب يحجب خوادم الاستضافة (فحص روبوت). "
+                        "الحل المضمون: أرسل ملف كوكيز يوتيوب للبوت (Get cookies.txt) مرة واحدة.")
+            raise DownloadError(f"فشل التحميل: {last_err}{hint}")
+        except DownloadError as de:
+            # 🎯 الاكتشاف نفسه فشل (لا مرشحين) — L4 لا تزال آخر أمل ليوتيوب المحجوب
+            if not self.cookies_file and self._is_youtube(url):
+                try:
+                    return self._download_yt_fallback(url, outdir, preferred)
+                except DownloadError:
+                    pass
+            raise de
         except Exception as e:  # noqa: BLE001
             raise DownloadError(f"فشل التحميل: {first_err} / {str(e)[:200]}") from e
 
@@ -413,11 +449,52 @@ class UniversalExtractor:
                 "thumbnail": info.get("thumbnail") or "", "duration": info.get("duration"),
                 "candidates": cands}
 
+    @staticmethod
+    def _is_youtube(url: str) -> bool:
+        u = url.lower()
+        return "youtube.com" in u or "youtu.be" in u
+
+    def _download_yt_fallback(self, url: str, outdir: Path, preferred: str) -> dict:
+        """L4: يوتيوب محجوب من الخادم — يحمّل عبر خوادم Invidious/Piped العامة (بلا كوكيز).
+
+        لا يلمس يوتيوب إطلاقًا — التحميل من خوادم مرآة عامة (مجرّب 2026-08).
+        """
+        from yt_dlp import YoutubeDL
+
+        m = re.search(r"(?:v=|shorts/|youtu\.be/|embed/|live/)([A-Za-z0-9_-]{11})", url)
+        video_id = m.group(1) if m else None
+        if not video_id:
+            raise DownloadError("لا يمكن تحديد معرّف يوتيوب")
+        last_err = "لا خوادم بديلة متاحة"
+        for host in ("yewtu.be", "invidious.nerdvpn.de", "piped.video"):
+            alt = f"https://{host}/watch?v={video_id}"
+            try:
+                opts = self._base_ytdlp_opts(outdir, preferred)
+                opts["outtmpl"] = str(outdir / "%(title).120s.%(ext)s")
+                with YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(alt, download=True)
+                files = [p for p in outdir.iterdir() if p.is_file()]
+                if not files:
+                    raise DownloadError("لم يُنشأ ملف")
+                path = max(files, key=lambda p: p.stat().st_mtime)
+                if not _has_audio(path):
+                    raise DownloadError("بدون صوت")
+                if preferred != "audio" and not _has_video(path):
+                    raise DownloadError("بدون فيديو")
+                return {"path": str(path), "title": info.get("title") or video_id,
+                        "duration": info.get("duration"),
+                        "thumbnail": info.get("thumbnail") or "",
+                        "ext": path.suffix.lstrip(".")}
+            except Exception as e:  # noqa: BLE001
+                last_err = f"{host}: {str(e)[:120]}"
+        raise DownloadError(f"فشلت خوادم يوتيوب البديلة: {last_err}")
+
     def _download_ytdlp(self, url: str, outdir: Path, preferred: str) -> dict:
         from yt_dlp import YoutubeDL
         info = None
         path = None
-        # المحاولة الأولى
+        # محاولة نظيفة واحدة بالعميل الافتراضي — لا تعدد عملاء ولا إعادة محاولة
+        # (كل طلب إضافي يرفع علم الروبوت؛ الحظر يُعالَج عبر L4 بلا لمس يوتيوب)
         try:
             opts = self._base_ytdlp_opts(outdir, preferred)
             with YoutubeDL(opts) as ydl:
@@ -426,34 +503,8 @@ class UniversalExtractor:
             if files:
                 path = max(files, key=lambda p: p.stat().st_mtime)
         except Exception as first_err:  # noqa: BLE001
-            if preferred != "audio":
-                # 🎯 يوتيوب: 403 من googlevideo = حجب IP/توقيع من يوتيوب —
-                # أعد المحاولة بعملاء آخرين (ios/web/tv) قبل الاستسلام
-                low_err = str(first_err).lower()
-                if "googlevideo" in low_err and "403" in low_err:
-                    # الترتيب: ios/web/tv يعيدون جودات كاملة إن نجحوا؛ android أخيرًا
-                    # (يعمل دائمًا لكنه يجبر 360p فقط — ملاذ أخير لا فشل كامل)
-                    for client in ("ios", "web", "tv", "android"):
-                        try:
-                            opts_c = self._base_ytdlp_opts(outdir, preferred)
-                            opts_c["extractor_args"] = {"youtube": {"player_client": [client]}}
-                            opts_c["outtmpl"] = str(outdir / "%(title).120s_alt.%(ext)s")
-                            with YoutubeDL(opts_c) as ydl:
-                                info_c = ydl.extract_info(url, download=True)
-                            alt_files = [p for p in outdir.glob("*_alt.*") if p.is_file()]
-                            if alt_files:
-                                cand = max(alt_files, key=lambda p: p.stat().st_mtime)
-                                if _has_audio(cand) and (preferred == "audio" or _has_video(cand)):
-                                    info = info_c
-                                    final = cand.with_name(cand.name.replace("_alt", ""))
-                                    cand.rename(final)
-                                    path = final
-                                    break
-                        except Exception:  # noqa: BLE001
-                            continue
-                if info is None:
-                    raise first_err
-            # وضع الصوت: التنسيق "الصوتي" المعلن قد يكون بلا صوت فعليًا — نكمل بالمحاولة البديلة
+            if info is None:
+                raise first_err
 
         # بعض المواقع (تيك توك) تعلن صوتًا ولا توفره فعليًا (HEVC بلا صوت).
         # إذا فشل الاستخراج أو خرج الملف بلا صوت — أعد المحاولة بمصدر h264 مدمج (صوت مضمون).
@@ -527,6 +578,9 @@ class UniversalExtractor:
                           timeout=self.request_timeout, verify=True)
         r.raise_for_status()
         final = str(r.url)
+        # SSRF: التحقق من المضيف الأصلي وحده لا يكفي — إعادة التحقق بعد إعادة التوجيه
+        if is_private_host(final):
+            raise DownloadError("الوجهة النهائية للرابط عنوان داخلي — مرفوض")
         ctype = r.headers.get("content-type", "")
         if ctype.startswith("video/") or any(
                 m in ctype for m in ("mpegurl", "dash", "mp4", "webm")):
@@ -555,6 +609,9 @@ class UniversalExtractor:
                 height: int = 0, size: int = 0):
             absu = _absolutize(base, u)
             if not absu or absu in seen or _is_ad_or_tracker(absu):
+                return
+            # SSRF: أي رابط مستخرج من محتوى الصفحة يُفحص — يمنع <video src="http://redis:6379/">
+            if is_private_host(absu):
                 return
             # ضجيج: صور متحركة / مصغرات / روابط ليست وسائط
             low = absu.lower()
@@ -794,7 +851,7 @@ class UniversalExtractor:
         cands: list[MediaCandidate] = []
         cookies_file = self._write_cookies(cookies) if cookies else None
         for murl, m in media.items():
-            if _is_ad_or_tracker(murl):
+            if _is_ad_or_tracker(murl) or is_private_host(murl):
                 continue
             cands.append(MediaCandidate(
                 url=murl, kind=_guess_kind(murl), source="cdp",
@@ -810,7 +867,8 @@ class UniversalExtractor:
                 for key in ("src", "data-src", "data-url", "data-source", "data-video"):
                     v = attrs.get(key)
                     absu = _absolutize(base, v) if v else None
-                    if absu and absu not in seen and not _is_ad_or_tracker(absu):
+                    if absu and absu not in seen and not _is_ad_or_tracker(absu) \
+                            and not is_private_host(absu):
                         seen.add(absu)
                         cands.append(MediaCandidate(absu, _guess_kind(absu), "cdp-dom",
                                                     height=int(
@@ -830,11 +888,7 @@ class UniversalExtractor:
             dom = c.get("domain", "")
             if not dom:
                 continue
-            hostonly = "FALSE"
-            if dom.startswith("."):
-                hostonly = "FALSE"
-            else:
-                hostonly = "FALSE"
+            hostonly = "FALSE"  # دومين ملف الكوكيز قد يبدأ بنقطة — كلها تُكتب كـ host-only=FALSE
             secure = "TRUE" if c.get("secure") else "FALSE"
             exp = int(c.get("expires", 0))
             if exp <= 0:
@@ -862,6 +916,9 @@ class UniversalExtractor:
                             referer: str) -> dict:
         outdir = Path(outdir)
         outdir.mkdir(parents=True, exist_ok=True)
+        # SSRF: الفحص النهائي قبل فتح أي اتصال (حتى لو جاء المرشح من طبقة أخرى)
+        if is_private_host(cand.url):
+            raise DownloadError("رابط الوسائط عنوان داخلي — مرفوض")
         if cand.kind in ("hls", "dash"):
             # سلّم الرابط إلى yt-dlp (يتعامل مع المانيفستات حتى للمواقع المجهولة)
             from yt_dlp import YoutubeDL

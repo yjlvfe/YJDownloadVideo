@@ -52,7 +52,7 @@ def main():
     outdir.mkdir(parents=True, exist_ok=True)
 
     ex = UniversalExtractor(cookies_file=args.cookies,
-                            use_browser=not args.no_browser,
+                            use_browser=False if args.no_browser else None,
                             progress_hook=hook)
 
     try:

@@ -1,4 +1,4 @@
-import os, sys, time, subprocess
+import os, sys, time, shutil, subprocess
 from datetime import timedelta
 from pathlib import Path
 from .config import settings
@@ -14,26 +14,31 @@ def _owner_cookies(owner_key: str) -> str | None:
 
 def process_job(job_id):
     with SessionLocal() as db:
-        job=db.get(Job,job_id)
-        if not job: return
-        job.status='downloading'; db.commit()
+        job = db.get(Job, job_id)
+        if not job:
+            return
+        url = job.url
+        fmt = job.requested_format or 'best'
         owner_key = job.owner_key or ""
-    outdir=settings.storage_path / job_id; outdir.mkdir(exist_ok=True)
+        job.status = 'downloading'
+        db.commit()
+    outdir = settings.storage_path / job_id
+    outdir.mkdir(exist_ok=True)
     write_status(job_id, "downloading", 0)
+
+    # التقدم يُكتب في status.json فقط — لا مساس بـ SQLite عند كل نبضة
+    # (كان commit لكل حدث تقدم ~1/ثانية = تنافس قفل بلا أي فائدة)
     def hook(d):
-        if d['status']=='downloading':
-            with SessionLocal() as db:
-                j=db.get(Job,job_id)
-                if j: j.status='downloading'; db.commit()
+        if d['status'] == 'downloading':
             total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
             done = d.get('downloaded_bytes') or 0
             pct = int(done / total * 100) if total else 0
             write_status(job_id, "downloading", pct, size=done)
         elif d['status'] in ('finished', 'post-processing'):
             write_status(job_id, "preparing", 100)
+
     ex = UniversalExtractor(
         cookies_file=_owner_cookies(owner_key),
-        use_browser=settings.enable_browser_capture and not settings.vercel_mode,
         progress_hook=hook,
         max_filesize=settings.max_file_size_bytes,
         max_duration=settings.max_duration_seconds,
@@ -41,33 +46,73 @@ def process_job(job_id):
         request_timeout=settings.request_timeout_seconds,
     )
     try:
-        res = ex.download(job.url, outdir, preferred=job.requested_format or 'best')
-        file=Path(res['path'])
-        if not file.exists(): raise ValueError('لم يتم إنشاء الملف')
+        res = ex.download(url, outdir, preferred=fmt)
+        file = Path(res['path'])
+        if not file.exists():
+            raise ValueError('لم يتم إنشاء الملف')
         write_status(job_id, "done", 100, size=file.stat().st_size)
         with SessionLocal() as db:
-            j=db.get(Job,job_id)
-            j.title=res.get('title') or j.title
-            j.thumbnail=res.get('thumbnail')
-            j.duration=res.get('duration')
-            j.file_size=file.stat().st_size
-            j.file_path=str(file)
-            j.status='ready'
-            j.download_token=make_token(job_id)
-            j.expires_at=utcnow()+timedelta(seconds=settings.file_ttl_seconds)
+            j = db.get(Job, job_id)
+            if not j:
+                return
+            j.title = res.get('title') or j.title
+            j.thumbnail = res.get('thumbnail')
+            j.duration = res.get('duration')
+            j.file_size = file.stat().st_size
+            j.file_path = str(file)
+            j.status = 'ready'
+            j.download_token = make_token(job_id)
+            j.expires_at = utcnow() + timedelta(seconds=settings.file_ttl_seconds)
             db.commit()
     except Exception as e:
+        # 🗑️ فشل نظيف: لا بقايا على القرص + انتهاء صلاحية ليلتقطها cleanup
+        # (كان الفشل بلا expires_at = صف + مجلد + status يتيمون للأبد)
+        shutil.rmtree(outdir, ignore_errors=True)
         write_status(job_id, "failed", message=str(e)[:300])
         with SessionLocal() as db:
-            j=db.get(Job,job_id)
-            if j: j.status='failed'; j.error=str(e)[:500]; db.commit()
+            j = db.get(Job, job_id)
+            if j:
+                j.status = 'failed'
+                j.error = str(e)[:500]
+                j.expires_at = utcnow() + timedelta(hours=1)
+                db.commit()
     finally:
         ex.cleanup()
 
+def _recover_stale_jobs(r):
+    """استرجاع عند الإقلاع: وظائف عالقة في downloading/preparing (>10 دقائق)
+    — مات العامل في منتصفها وخرجت من طابور Redis للأبد (blpop لا يعيد التسليم)."""
+    try:
+        with SessionLocal() as db:
+            stale = db.query(Job).filter(
+                Job.status.in_(['downloading', 'preparing']),
+                Job.created_at < utcnow() - timedelta(minutes=10),
+            ).all()
+            for j in stale:
+                j.status = 'waiting'
+                db.commit()
+                r.rpush('yjdownload:jobs', j.id)
+                print(f"recovered stale job {j.id}")
+    except Exception:  # noqa: BLE001
+        pass
+
 def main():
     import redis
-    r=redis.Redis.from_url(settings.redis_url)
+    r = redis.Redis.from_url(settings.redis_url)
+    _recover_stale_jobs(r)
     while True:
-        item=r.blpop('yjdownload:jobs',timeout=5)
-        if item: process_job(item[1].decode())
-if __name__=='__main__': main()
+        try:
+            item = r.blpop('yjdownload:jobs', timeout=5)
+            if item:
+                jid = item[1].decode()
+                try:
+                    process_job(jid)
+                except Exception:  # noqa: BLE001
+                    import logging
+                    logging.getLogger("worker").exception("job %s crashed", jid)
+        except Exception:  # noqa: BLE001
+            # Redis غير متاح (إعادة تشغيل/انهيار) — لا نموت، ننتظر ونعيد المحاولة
+            time.sleep(5)
+
+if __name__ == '__main__':
+    main()

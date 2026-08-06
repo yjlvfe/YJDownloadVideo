@@ -4,12 +4,12 @@ from pathlib import Path
 class Settings(BaseSettings):
     app_name: str = "YJDownloadVideo"
     environment: str = "development"
-    secret_key: str = "change-me"
+    secret_key: str = ""  # إجباري — الإقلاع يُرفض بدونه (لا "change-me" بعد الآن)
     database_url: str = "sqlite+aiosqlite:///./data/yjdownload.db"
     redis_url: str = "redis://localhost:6379/0"
     base_url: str = "http://localhost:8000"
     storage_dir: str = "./storage"
-    file_ttl_seconds: int = 3600
+    file_ttl_seconds: int = 86400  # 24 ساعة — يطابق README و cleanup
     max_file_size_bytes: int = 2 * 1024 * 1024 * 1024
     max_duration_seconds: int = 0  # 0 = غير محدودة إطلاقًا (قرار المستخدم 2026-08)
     rate_limit_per_minute: int = 10
@@ -18,14 +18,14 @@ class Settings(BaseSettings):
     telegram_api_id: int = 0
     telegram_api_hash: str = ""
     sessions_dir: str = "./data/sessions"
-    telegram_send_limit_bytes: int = 50 * 1024 * 1024
+    telegram_send_limit_bytes: int = 2097152000  # 2GB — يطابق خادم Bot API المحلي
     max_active_jobs_per_ip: int = 50
     max_active_jobs_per_telegram_user: int = 50
     ytdlp_bin: str = "yt-dlp"
     ffmpeg_bin: str = "ffmpeg"
     vercel_mode: bool = False  # يُفعَّل تلقائيًا على Vercel (VERCEL=1)
     browser_bin: str = "chromium"
-    enable_browser_capture: bool = True
+    enable_browser_capture: bool = False  # معطّل افتراضيًا — بساطة + تقليل طلبات يوتيوب
     request_timeout_seconds: int = 30
     cookies_dir: str = "./data/cookies"
     status_dir: str = "./data/status"
@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     secure_cookies: bool = False
     allowed_hosts: str = "localhost,127.0.0.1"
     cors_origins: str = "http://localhost:8000"
+    admin_secret: str = ""  # إن ضُبط: يحرس /api/telegram/status
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     @property
@@ -77,3 +78,11 @@ def ffmpeg_location() -> str:
 settings = Settings()
 settings.storage_path
 settings.db_path
+
+# 🛡️ Fail-fast: ممنوع الإقلاع بسر ضعيف/مفترض — كان "change-me" يسمح بتزوير توكنات التحميل
+_WEAK_KEYS = {"", "change-me", "change-this-to-a-long-random-secret",
+              "change-this-to-a-long-random-string"}
+if settings.secret_key.strip() in _WEAK_KEYS:
+    raise RuntimeError(
+        "SECRET_KEY غير مضبوط في .env — ولّد قيمة عشوائية طويلة ثم أعد التشغيل. "
+        "الإقلاع مرفوض عمدًا (أمان).")

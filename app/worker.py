@@ -131,6 +131,11 @@ def _extract_in_child(job_id: str, result_queue: Any) -> None:
         extractor.cleanup()
 
 
+def _download_timeout_seconds() -> int:
+    """Keep a safety cutoff without imposing a short limit on long videos."""
+    return max(300, int(settings.download_timeout_seconds))
+
+
 def _run_extraction_with_timeout(job_id: str) -> dict[str, Any]:
     context = mp.get_context("fork")
     result_queue = context.Queue(maxsize=1)
@@ -140,7 +145,7 @@ def _run_extraction_with_timeout(job_id: str) -> dict[str, Any]:
         daemon=False,
     )
     process.start()
-    timeout_seconds = max(90, min(300, int(settings.request_timeout_seconds) * 4))
+    timeout_seconds = _download_timeout_seconds()
     process.join(timeout_seconds)
     if process.is_alive():
         process.terminate()

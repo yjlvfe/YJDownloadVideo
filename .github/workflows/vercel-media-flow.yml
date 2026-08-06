@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - "fix/**"
   pull_request:
     branches:
       - main
@@ -14,7 +15,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -29,64 +30,34 @@ jobs:
           npm install --ignore-scripts
           npm audit --omit=dev --audit-level=high
           node scripts/youtube_innertube.mjs self-test
-      - name: Install dependencies and audit tool
-        run: pip install -r requirements.txt pip-audit
-      - name: Audit Python dependencies
-        run: pip-audit -r requirements.txt
+      - name: Install development dependencies and audit tool
+        run: pip install -r requirements-dev.txt pip-audit
+      - name: Audit production Python dependencies
+        run: pip-audit -r requirements-runtime.txt
       - name: Scan tracked text files for secret-shaped values
-        shell: bash
-        run: |
-          python - <<'PY'
-          import pathlib
-          import re
-          import subprocess
-          import sys
-
-          tracked = subprocess.check_output(["git", "ls-files", "-z"]).split(b"\0")
-          patterns = {
-              "telegram-bot-token": re.compile(rb"\b\d{6,12}:[A-Za-z0-9_-]{30,}\b"),
-              "private-key": re.compile(rb"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
-              "github-token": re.compile(rb"\bgh[pousr]_[A-Za-z0-9]{30,}\b"),
-              "aws-access-key": re.compile(rb"\bAKIA[0-9A-Z]{16}\b"),
-          }
-          ignored = {pathlib.Path(".github/workflows/vercel-media-flow.yml")}
-          detected: list[tuple[str, str]] = []
-          for raw in tracked:
-              if not raw:
-                  continue
-              path = pathlib.Path(raw.decode("utf-8", errors="surrogateescape"))
-              if path in ignored:
-                  continue
-              try:
-                  data = path.read_bytes()
-              except OSError:
-                  continue
-              if b"\0" in data[:8192]:
-                  continue
-              for name, pattern in patterns.items():
-                  if pattern.search(data):
-                      detected.append((name, path.as_posix()))
-          if detected:
-              for category, path in sorted(set(detected)):
-                  print(f"Potential {category} value detected in tracked file: {path}")
-              print("Values and matching lines are intentionally not displayed.")
-              sys.exit(1)
-          print("No secret-shaped values detected in tracked text files.")
-          PY
+        run: python scripts/check_tracked_secrets.py
       - name: Run complete test suite
         run: PYTHONPATH=. pytest -q
       - name: Compile application and operational scripts
         run: PYTHONPATH=. python -m compileall -q app scripts
-      - name: Build production Docker image
+      - name: Build tested Docker stage
         shell: bash
         run: |
           set -o pipefail
-          docker build --progress=plain --tag yjdownload:release-gate . 2>&1 | tee docker-build.log
+          docker build --target test --progress=plain --tag yjdownload:test . 2>&1 | tee docker-test-build.log
+      - name: Build production Docker runtime
+        shell: bash
+        run: |
+          set -o pipefail
+          docker build --target runtime --progress=plain --tag yjdownload:release-gate . 2>&1 | tee docker-runtime-build.log
+          docker run --rm --entrypoint /opt/venv/bin/python yjdownload:release-gate -c "import importlib.util; assert importlib.util.find_spec('pytest') is None"
       - name: Upload Docker diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: docker-build-log
-          path: docker-build.log
+          name: docker-build-logs
+          path: |
+            docker-test-build.log
+            docker-runtime-build.log
           if-no-files-found: ignore
           retention-days: 3

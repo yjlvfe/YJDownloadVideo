@@ -1,4 +1,5 @@
 import os, sys, time, shutil, subprocess
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
 from .config import settings
@@ -96,22 +97,27 @@ def _recover_stale_jobs(r):
     except Exception:  # noqa: BLE001
         pass
 
+def _safe_process(jid):
+    try:
+        process_job(jid)
+    except Exception:  # noqa: BLE001
+        import logging
+        logging.getLogger("worker").exception("job %s crashed", jid)
+
+
 def main():
     import redis
     r = redis.Redis.from_url(settings.redis_url)
     _recover_stale_jobs(r)
+    # ⚡ معالجة متوازية: حتى 20 مهمة بنفس الوقت — بلا طابور، الكل يتحمل دفعة واحدة
+    executor = ThreadPoolExecutor(max_workers=20)
     while True:
         try:
             item = r.blpop('yjdownload:jobs', timeout=5)
             if item:
                 jid = item[1].decode()
-                try:
-                    process_job(jid)
-                except Exception:  # noqa: BLE001
-                    import logging
-                    logging.getLogger("worker").exception("job %s crashed", jid)
+                executor.submit(_safe_process, jid)
         except Exception:  # noqa: BLE001
-            # Redis غير متاح (إعادة تشغيل/انهيار) — لا نموت، ننتظر ونعيد المحاولة
             time.sleep(5)
 
 if __name__ == '__main__':

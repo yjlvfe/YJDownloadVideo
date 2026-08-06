@@ -66,19 +66,18 @@ async def reset_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _create_job(user_id: int, chat_id: int, url: str, fmt: str, context,
-                      status_msg=None, queue_pos: int = 1) -> str | None:
-    """ينشئ مهمة — رسالة الحالة الواحدة (الأزرار نفسها) تتحول لشريط تقدم حي.
+                      status_msg=None) -> str | None:
+    """ينشئ مهمة ويبدأ تنفيذها فورًا — بلا طابور، كل شي يتحمل دفعة واحدة.
 
-    2026-08: مهمات البوت تدخل نفس طابور Redis (FIFO موحّد مع الويب) بدل
-    تنفيذ التحميل داخل البوت — لا خيوط متوازية بلا حد ولا OOM.
-    """
+    2026-08: معالجة متوازية في الـ worker (ThreadPoolExecutor=20) — تنفيذ
+    فوري بدون انتظار، البوت يعرض التحميل مباشرة دون رسائل طابور."""
     user_key = f"tg:{user_id}"
     with SessionLocal() as db:
         active = db.query(Job).filter(
             Job.owner_key == user_key,
             Job.status.in_(["waiting", "downloading", "preparing"]),
         ).count()
-        # 🛡️ الحد الفعلي لكل مستخدم (كان معرّفًا في الإعدادات وغير مفعّل)
+        # 🛡️ الحد الفعلي لكل مستخدم
         if active >= settings.max_active_jobs_per_telegram_user:
             try:
                 await context.bot.send_message(
@@ -88,7 +87,6 @@ async def _create_job(user_id: int, chat_id: int, url: str, fmt: str, context,
             except Exception:  # noqa: BLE001
                 pass
             return None
-        queue_pos = active + 1
         job = Job(id=secrets.token_urlsafe(16), url=url, requested_format=fmt,
                   status="waiting", owner_key=user_key, source="telegram")
         db.add(job)
@@ -98,7 +96,7 @@ async def _create_job(user_id: int, chat_id: int, url: str, fmt: str, context,
     if WEBHOOK_MODE:
         # Vercel: لا Redis — تنفيذ فوري داخل العملية (خيط) ثم مراقبة
         _spawn(asyncio.to_thread(process_job, jid))
-        await watch_and_deliver(chat_id, jid, status_msg=status_msg, queue_pos=queue_pos)
+        await watch_and_deliver(chat_id, jid, status_msg=status_msg)
     else:
         try:
             import redis
@@ -116,7 +114,7 @@ async def _create_job(user_id: int, chat_id: int, url: str, fmt: str, context,
             except Exception:  # noqa: BLE001
                 pass
             return None
-        _spawn(watch_and_deliver(chat_id, jid, status_msg=status_msg, queue_pos=queue_pos))
+        _spawn(watch_and_deliver(chat_id, jid, status_msg=status_msg))
     return jid
 
 
@@ -480,12 +478,10 @@ async def _edit_progress(msg, text: str):
         return msg
 
 
-async def watch_and_deliver(chat_id: int, jid: str, status_msg=None, queue_pos: int = 1):
-    """رسالة حالة واحدة حية: طابور ← تحميل % كل ثانية ← رفع % كل ثانية ← الملف ← تختفي.
+async def watch_and_deliver(chat_id: int, jid: str, status_msg=None):
+    """رسالة حالة واحدة حية: تحميل % كل ثانية ← رفع % كل ثانية ← الملف ← تختفي.
 
-    (قرار المستخدم 2026-08: بلا رسائل كثيرة — نفس رسالة الأزرار تتحول وتتحدث كل ثانية،
-    وبعد الوصول يُحذف الشريط ويبقى المقطع وحده. التحميل يتم في العامل عبر طابور Redis.)
-    """
+    (2026-08: بلا طابور — الـ worker يعالج 20 مهمة متوازية، التحميل يبدأ فورًا.)"""
     up_state = {"pct": 0}
 
     def sync_up_cb(current: int, total: int):
@@ -501,13 +497,11 @@ async def watch_and_deliver(chat_id: int, jid: str, status_msg=None, queue_pos: 
         if status_msg is not None:
             # نفس رسالة الأزرار تتحول لشريط الحالة
             bar = await _edit_progress(status_msg,
-                                       f"⏳ #‎{queue_pos} في الطابور" if queue_pos > 1
-                                       else f"⬇️ {_progress_bar(0)} 0% — جارٍ التحميل")
+                                       f"⬇️ {_progress_bar(0)} 0% — جارٍ التحميل")
         if bar is None:
             try:
                 bar = await bot.send_message(chat_id,
-                                             f"⏳ #‎{queue_pos} في الطابور" if queue_pos > 1
-                                             else f"⬇️ {_progress_bar(0)} 0% — جارٍ التحميل")
+                                             f"⬇️ {_progress_bar(0)} 0% — جارٍ التحميل")
             except Exception:  # noqa: BLE001
                 pass
 
@@ -518,7 +512,8 @@ async def watch_and_deliver(chat_id: int, jid: str, status_msg=None, queue_pos: 
                 j = db.get(Job, jid)
                 state = j.status if j else "failed"
             if state in ("waiting",):
-                text = f"⏳ #‎{queue_pos} في الطابور"
+                # في انتظار الـ worker (أجزاء من الثانية) — نعرض التحميل فورًا
+                text = f"⬇️ {_progress_bar(0)} 0% — جارٍ التحميل"
             elif state in ("downloading", "preparing"):
                 st = read_status(jid)
                 if st and st.get("stage") == "preparing":

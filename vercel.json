@@ -1,6 +1,20 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "regions": ["fra1"],
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://yjvideodownloads.onrender.com/api/:path*"
+    },
+    {
+      "source": "/download/:path*",
+      "destination": "https://yjvideodownloads.onrender.com/download/:path*"
+    },
+    {
+      "source": "/webhook/telegram",
+      "destination": "https://yjvideodownloads.onrender.com/webhook/telegram"
+    }
+  ],
   "functions": {
     "api/index.py": {
       "maxDuration": 300

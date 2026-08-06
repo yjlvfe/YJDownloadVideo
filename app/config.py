@@ -80,6 +80,16 @@ class Settings(BaseSettings):
             elif self.worker_shared_secret:
                 material = f"yjdownload-worker-signing-v1\0{self.worker_shared_secret}"
                 self.secret_key = hashlib.sha256(material.encode("utf-8")).hexdigest()
+            elif VERCEL_RUNTIME:
+                # Vercel is stateless UI only. Stateful API, downloads and Telegram
+                # webhook routes are externally rewritten to Render in vercel.json.
+                identity = (
+                    os.getenv("VERCEL_PROJECT_ID")
+                    or os.getenv("VERCEL_URL")
+                    or "yjdownload-stateless-frontend"
+                )
+                material = f"yjdownload-vercel-stateless-v1\0{identity}"
+                self.secret_key = hashlib.sha256(material.encode("utf-8")).hexdigest()
             elif deployed or self.environment.strip().lower() in {"production", "prod"}:
                 raise ValueError(
                     "SECRET_KEY, WORKER_SHARED_SECRET, or TELEGRAM_BOT_TOKEN must be configured in production"

@@ -6,6 +6,7 @@ from .config import settings
 from .extractor import DownloadError, UniversalExtractor
 from .pot_runtime_patch import get_youtube_circuit, install
 from .quality_runtime_patch import install as install_quality_runtime
+from .telegram_quality_runtime_patch import install as install_telegram_quality_runtime
 
 _COMPATIBILITY_GUARDS_INSTALLED = False
 
@@ -57,6 +58,7 @@ def _install_compatibility_guards() -> None:
 def install_runtime_patches() -> None:
     install()
     install_quality_runtime()
+    install_telegram_quality_runtime()
     _install_compatibility_guards()
 
 

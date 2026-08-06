@@ -29,7 +29,8 @@ def test_normalize_keeps_largest_size_per_key():
     assert item["size"] == 60
 
 
-def test_normalize_fallback_presets():
+def test_normalize_empty_has_no_fake_qualities():
+    """لا جودات وهمية أبدًا — بدون جودات حقيقية يبقى فقط الأفضل والصوت."""
     out = normalize_formats([])
     ids = [f["id"] for f in out]
-    assert ids == ["best", "1080", "720", "480", "audio"]
+    assert ids == ["best", "audio"]

@@ -19,7 +19,7 @@ def owner(request): return request.client.host if request.client else 'unknown'
 def job_json(j): return {'id':j.id,'title':j.title,'thumbnail':j.thumbnail,'status':j.status,'format_id':j.requested_format,'file_size':j.file_size,'duration':j.duration,'error':j.error,'download_url': f'/download/{j.download_token}' if j.download_token else None}
 
 def normalize_formats(raw_formats: list[dict]) -> list[dict]:
-    """قائمة جودات موحدة: الأفضل + كل دقة (فيديو+صوت) + صوت فقط — تطابق قوالب البوت."""
+    """قائمة جودات موحدة: الأفضل + كل دقة حقيقية من المقطع + صوت فقط — بلا جودات وهمية."""
     unique: dict[tuple[int, str], dict] = {}
     for item in raw_formats or []:
         label = str(item.get("label") or "")
@@ -34,10 +34,7 @@ def normalize_formats(raw_formats: list[dict]) -> list[dict]:
         if prev is None or (size or 0) > (prev.get("size") or 0):
             unique[key] = cand
     qualities = [unique[k] for k in sorted(unique, key=lambda v: (v[0], v[1]))]
-    if not qualities:
-        qualities = [{"id": "1080", "label": "1080p", "size": None},
-                     {"id": "720", "label": "720p", "size": None},
-                     {"id": "480", "label": "480p", "size": None}]
+    # ⚠️ إن لم توجد جودات حقيقية: نعرض "الأفضل" و"صوت فقط" فقط — ممنوع اختلاق دقات
     return [{"id": "best", "label": "⭐ الأفضل تلقائيًا", "size": None},
             *qualities,
             {"id": "audio", "label": "🎵 صوت فقط", "size": None}]

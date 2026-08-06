@@ -261,35 +261,45 @@ class UniversalExtractor:
     def inspect(self, url: str) -> dict:
         """معاينة سريعة لأي رابط: yt-dlp أولاً (قائمة جودات حقيقية)، ثم المسح/المتصفح.
 
-        يُرجع: {source, title, thumbnail, duration, formats: [{id,label,size}]}
+        يُرجع: {source, title, thumbnail, duration, formats: [{id,label,size,height}]}
+        ⚠️ الجودات دائمًا حقيقية من المقطع نفسه — ممنوع أي جودات افتراضية/ثابتة.
         """
-        presets = [
-            {"id": "best", "label": "الأفضل تلقائيًا", "size": None},
-            {"id": "1080", "label": "1080p", "size": None},
-            {"id": "720", "label": "720p", "size": None},
-            {"id": "480", "label": "480p", "size": None},
-            {"id": "audio", "label": "صوت فقط", "size": None},
-        ]
         try:
             info = self._ytdlp_info(url)
-            formats = []
+            # دقة واحدة لكل ارتفاع، مع تفضيل mp4/h264 (توافق أوسع) ثم الأكبر حجمًا
+            best_per_height: dict[int, dict] = {}
             for f in info.get("formats") or []:
-                if f.get("vcodec") != "none" and f.get("height"):
-                    size = f.get("filesize") or f.get("filesize_approx")
-                    if self.max_filesize and size and size > self.max_filesize:
-                        continue
-                    formats.append({"id": f["format_id"],
-                                    "label": f'{f.get("height")}p / {f.get("ext", "mp4")}',
-                                    "size": size})
+                if f.get("vcodec") == "none" or not f.get("height"):
+                    continue
+                size = f.get("filesize") or f.get("filesize_approx")
+                if self.max_filesize and size and size > self.max_filesize:
+                    continue
+                h = int(f["height"])
+                score = (0 if (f.get("ext") == "mp4"
+                               and str(f.get("vcodec") or "").startswith("avc1"))
+                         else (1 if f.get("ext") == "mp4" else 2))
+                cur = best_per_height.get(h)
+                if cur is None or score < cur["_score"] or (
+                        score == cur["_score"] and (size or 0) > (cur.get("size") or 0)):
+                    best_per_height[h] = {
+                        "id": str(h), "height": h,
+                        "label": f'{h}p / {f.get("ext", "mp4")}',
+                        "size": size, "_score": score,
+                    }
+            formats = []
+            for h in sorted(best_per_height, reverse=True):
+                entry = dict(best_per_height[h])
+                entry.pop("_score", None)
+                formats.append(entry)
             return {"source": "ytdlp", "title": info.get("title"),
                     "thumbnail": info.get("thumbnail"), "duration": info.get("duration"),
-                    "formats": formats[-20:] or presets}
+                    "formats": formats[:12]}
         except Exception:  # noqa: BLE001
             pass
         d = self.discover(url, skip_ytdlp=True)
         return {"source": d.get("source"), "title": d.get("title"),
                 "thumbnail": d.get("thumbnail"), "duration": d.get("duration"),
-                "formats": presets}
+                "formats": []}
 
     # ------------------------------------------------------------------
     # L1 — yt-dlp
@@ -303,7 +313,16 @@ class UniversalExtractor:
             "480": "bestvideo[height<=480]+bestaudio/best[height<=480]",
             "audio": "bestaudio/best",
         }
-        fmt = fmt_map.get(preferred, preferred or "best")
+
+        def _fmt_for(pref: str) -> str:
+            # أي دقة رقمية (من الفحص الفعلي للمقطع) تُترجم ديناميكيًا
+            if pref in ("best", "audio"):
+                return fmt_map[pref]
+            if pref.isdigit():
+                return f"bestvideo[height<={pref}]+bestaudio/best[height<={pref}]"
+            return fmt_map.get(pref, pref or "best")
+
+        fmt = _fmt_for(preferred)
         opts = {
             "format": fmt,
             "merge_output_format": "mp4",
@@ -319,8 +338,8 @@ class UniversalExtractor:
             "http_headers": _ytdlp_headers(),
             "format_sort": ["res", "ext:mp4:m4a", "vcodec:h264"],
             "ffmpeg_location": ffmpeg_location(),
-            # يوتيوب يحارب عميل web — android/ios يتجاوزان فحص "player response"
-            "extractor_args": {"youtube": {"player_client": ["android", "web", "ios"]}},
+            # ⚠️ لا extractor_args لعميل android — يجبر يوتيوب على إرجاع تنسيق واحد فقط (360p)
+            # ويوقف دمج العملاء الآخرين. العميل الافتراضي (web) يعيد كل الجودات حتى 4K/8K.
         }
         if self.cookies_file:
             opts["cookiefile"] = self.cookies_file
@@ -342,8 +361,8 @@ class UniversalExtractor:
             "quiet": True, "skip_download": True, "noplaylist": True,
             "no_warnings": True, "socket_timeout": 30,
             "http_headers": _ytdlp_headers(),
-            # يوتيوب يحارب عميل web — android/ios يتجاوزان فحص "player response"
-            "extractor_args": {"youtube": {"player_client": ["android", "web", "ios"]}},
+            # ⚠️ لا extractor_args لعميل android — يجبر يوتيوب على إرجاع تنسيق واحد فقط (360p).
+            # العميل الافتراضي يعيد كل الجودات (حتى 4K/8K).
         }
         if self.cookies_file:
             opts["cookiefile"] = self.cookies_file
@@ -399,7 +418,9 @@ class UniversalExtractor:
                 # أعد المحاولة بعملاء آخرين (ios/web/tv) قبل الاستسلام
                 low_err = str(first_err).lower()
                 if "googlevideo" in low_err and "403" in low_err:
-                    for client in ("ios", "web", "tv"):
+                    # الترتيب: ios/web/tv يعيدون جودات كاملة إن نجحوا؛ android أخيرًا
+                    # (يعمل دائمًا لكنه يجبر 360p فقط — ملاذ أخير لا فشل كامل)
+                    for client in ("ios", "web", "tv", "android"):
                         try:
                             opts_c = self._base_ytdlp_opts(outdir, preferred)
                             opts_c["extractor_args"] = {"youtube": {"player_client": [client]}}

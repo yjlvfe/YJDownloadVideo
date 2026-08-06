@@ -1,12 +1,31 @@
-"""اختبارات نظام اختيار التحميل: الجودات الصالحة + تنظيف الحالات المعلقة + الحذف الفوري."""
+"""اختبارات نظام اختيار التحميل: الجودات الديناميكية + تنظيف الحالات المعلقة + الحذف الفوري."""
 import time
 from pathlib import Path
 
 from app import bot
 
 
-def test_valid_qualities_whitelist():
-    assert bot._VALID_QUALITIES == {"best", "1080", "720", "480", "audio"}
+def test_quality_label_dynamic_digits():
+    """الدقة الرقمية من الفحص الفعلي تُعرض كـ 2160p — لا أسماء ثابتة فقط."""
+    assert bot._quality_label("best") == "⭐ الأفضل"
+    assert bot._quality_label("audio") == "🎵 صوت"
+    assert bot._quality_label("2160") == "2160p"
+    assert bot._quality_label("360") == "360p"
+
+
+def test_offered_heights_from_real_formats():
+    """أزرار الجودات تُبنى من جودات المقطع الحقيقية فقط — تنازليًا وبلا تكرار."""
+    formats = [
+        {"id": "137", "height": 1080, "label": "1080p / mp4", "size": 100},
+        {"id": "136", "height": 720, "label": "720p / mp4", "size": 50},
+        {"id": "18", "height": 360, "label": "360p / mp4", "size": 10},
+        {"id": "sb1", "height": None, "label": "storyboard", "size": None},
+        {"id": "140", "height": None, "label": "audio", "size": 5},
+    ]
+    assert bot._offered_heights(formats) == [1080, 720, 360]
+    # بلا جودات حقيقية → لا أزرار دقات
+    assert bot._offered_heights([]) == []
+    assert bot._offered_heights([{"id": "x", "label": "audio"}]) == []
 
 
 def test_pending_cleanup_removes_expired():

@@ -14,14 +14,7 @@ log = logging.getLogger("bot")
 # على Vercel لا يوجد عملية polling دائمة — يعمل عبر Webhook وتنفيذ فوري داخل الطلب
 WEBHOOK_MODE = bool(os.environ.get("VERCEL")) or settings.vercel_mode
 
-PREFS = load_user_prefs()  # user_id(str) -> "audio" | "video"
-
-def _pref_mode(uid: int) -> str:
-    return PREFS.get(str(uid), "video")
-
-def _set_pref(uid: int, mode: str):
-    PREFS[str(uid)] = mode
-    save_user_prefs(PREFS)
+PREFS = load_user_prefs()  # user_id(str) -> "ask" | "audio" | "video"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -75,7 +68,7 @@ async def _create_job(user_id: int, chat_id: int, url: str, fmt: str, context) -
         db.add(job)
         db.commit()
         jid = job.id
-    label = _QUALITY_LABELS.get(fmt, fmt)
+    label = _quality_label(fmt)
     if queue_pos == 1:
         await context.bot.send_message(chat_id, f"📥 تم الاستلام ({label}) — جارٍ المعالجة…")
     else:
@@ -135,12 +128,26 @@ async def video_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # نظام اختيار التحميل (فيديو/صوت/دقة) — بدل زر MP3
 # ============================================================
 
-PENDING: dict[str, dict] = {}      # nonce -> {user_id, chat_id, url, created}
+PENDING: dict[str, dict] = {}      # nonce -> {user_id, chat_id, url, created, offered?}
 _PICK_TTL = 180                     # 3 دقائق لاتخاذ القرار
-_VALID_QUALITIES = {"best", "1080", "720", "480", "audio"}
 
-_QUALITY_LABELS = {"best": "⭐ الأفضل", "audio": "🎵 صوت", "1080": "1080p",
-                   "720": "720p", "480": "480p"}
+_QUALITY_LABELS = {"best": "⭐ الأفضل", "audio": "🎵 صوت"}
+
+
+def _quality_label(fmt: str) -> str:
+    """اسم الجودة للرسائل: ثابتة معروفة أو دقة رقمية من الفحص الفعلي (مثل 2160 → 2160p)."""
+    if fmt in _QUALITY_LABELS:
+        return _QUALITY_LABELS[fmt]
+    if fmt.isdigit():
+        return f"{fmt}p"
+    return fmt
+
+
+def _offered_heights(formats: list[dict], limit: int = 6) -> list[int]:
+    """دقات فريدة تنازليًا من قائمة الجودات الحقيقية للمقطع — أساس أزرار البوت."""
+    return sorted({int(f["height"]) for f in formats or []
+                   if f.get("height") and str(f.get("height")).isdigit()},
+                  reverse=True)[:limit]
 
 
 def delete_job_files(job) -> None:
@@ -224,21 +231,57 @@ async def on_pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if kind == "v":
-        kb = _pick_kb([
-            [("⭐ الأفضل", f"pick:q:{nonce}:best"), ("1080p", f"pick:q:{nonce}:1080")],
-            [("720p", f"pick:q:{nonce}:720"), ("480p", f"pick:q:{nonce}:480")],
-            [("❌ إلغاء", f"pick:x:{nonce}")],
-        ])
+        # 🔍 فحص حقيقي: الجودات تُقرأ من المقطع نفسه — ممنوع جودات ثابتة/وهمية
         await query.answer()
         try:
-            await query.message.edit_text("🎬 اختر دقة الفيديو:", reply_markup=kb)
+            await query.message.edit_text("🔍 جارٍ فحص الجودات المتاحة في المقطع…")
+        except Exception:  # noqa: BLE001
+            pass
+        heights: list[int] = []
+        try:
+            from .extractor import UniversalExtractor
+            ex = UniversalExtractor(
+                request_timeout=30,
+                max_filesize=settings.max_file_size_bytes,
+            )
+            try:
+                d = await asyncio.wait_for(
+                    asyncio.to_thread(ex.inspect, pending["url"]), timeout=45)
+            finally:
+                ex.cleanup()
+            heights = _offered_heights(d.get("formats") or [])
+        except Exception:  # noqa: BLE001
+            heights = []
+        offered = {"best", *(str(h) for h in heights)}
+        pending["offered"] = offered
+        rows: list[list[tuple[str, str]]] = []
+        if "best" in offered:
+            rows.append([("⭐ الأفضل", f"pick:q:{nonce}:best")])
+        row: list[tuple[str, str]] = []
+        for h in heights:
+            row.append((f"{h}p", f"pick:q:{nonce}:{h}"))
+            if len(row) == 2:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+        rows.append([("🎵 صوت", f"pick:a:{nonce}"), ("❌ إلغاء", f"pick:x:{nonce}")])
+        kb = _pick_kb(rows)
+        note = "" if heights else "\n⚠️ تعذر تحديد الجودات المتاحة — سيُحمَّل الأفضل المتوفر."
+        try:
+            await query.message.edit_text("🎬 اختر دقة الفيديو:" + note, reply_markup=kb)
         except Exception:  # noqa: BLE001
             pass
         return
 
     if kind == "a":
         fmt = "audio"
-    elif kind == "q" and len(parts) >= 4 and parts[3] in _VALID_QUALITIES - {"audio"}:
+    elif kind == "q" and len(parts) >= 4:
+        # الجودة يجب أن تكون مما عُرض فعلاً على المستخدم (من فحص المقطع)
+        offered = pending.get("offered") or {"best"}
+        if parts[3] not in offered:
+            await query.answer("❌ هذه الجودة غير متاحة لهذا المقطع", show_alert=True)
+            return
         fmt = parts[3]
     else:
         await query.answer("❌ اختيار غير صالح")

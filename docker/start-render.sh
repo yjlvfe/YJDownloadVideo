@@ -229,7 +229,7 @@ if [ "$app_ready" != "true" ]; then
   exit 1
 fi
 
-WEBHOOK_URL="${TELEGRAM_WEBHOOK_URL:-https://yj-download-video.vercel.app/webhook/telegram}"
+WEBHOOK_URL="${TELEGRAM_WEBHOOK_URL:-https://yjvideodownloads.onrender.com/webhook/telegram}"
 export TELEGRAM_WEBHOOK_URL="$WEBHOOK_URL"
 
 WEBHOOK_SECRET=$(python - <<'PY'

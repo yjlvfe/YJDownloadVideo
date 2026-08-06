@@ -9,8 +9,10 @@ ROOT = Path(__file__).resolve().parents[1]
 PINNED_YTDLP = "yt-dlp==2026.7.23.234303.dev0"
 
 
-def test_requirements_pin_the_tested_ytdlp_version() -> None:
-    requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
+def test_runtime_requirements_pin_the_tested_ytdlp_version() -> None:
+    requirements = (
+        ROOT / "requirements-runtime.txt"
+    ).read_text(encoding="utf-8").splitlines()
     assert PINNED_YTDLP in requirements
     assert not any(line.startswith("yt-dlp>=") for line in requirements)
 

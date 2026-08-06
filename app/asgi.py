@@ -11,12 +11,11 @@ from fastapi.responses import FileResponse, RedirectResponse
 
 from . import main as main_module
 from . import pot_runtime_patch as _pot_runtime_patch  # noqa: F401
-from . import network_runtime_patch as _network_runtime_patch  # noqa: F401
 from .config import settings
 from .db import Job, SessionLocal
 from .durable_runtime import get_job_queue
-from .inspect_runtime import inspect_with_timeout
 from .main import app as fastapi_app
+from . import live_acceptance_probe as _live_acceptance_probe  # noqa: F401,E402
 from .media_choice import safe_media_title
 from .rate_limit import SlidingWindowLimiter
 from .redaction import sanitize_external_error
@@ -92,26 +91,6 @@ def _verify_transition_worker_request(raw: bytes, request: Request, context: str
 
 
 main_module._verify_signed_worker_request = _verify_transition_worker_request
-
-
-def _bounded_inspect_local(url: str) -> dict[str, Any]:
-    timeout = min(40, max(15, int(settings.request_timeout_seconds)))
-    result = inspect_with_timeout(url, timeout_seconds=timeout)
-    return {
-        "title": result.get("title"),
-        "thumbnail": result.get("thumbnail"),
-        "duration": result.get("duration"),
-        "source": result.get("source"),
-        "formats": main_module.normalize_formats(result.get("formats", [])),
-    }
-
-
-# FastAPI route handlers resolve this module global at call time. Install the
-# bounded version before importing the temporary acceptance probe so every
-# inspection path has the same process isolation and timeout.
-main_module._inspect_local = _bounded_inspect_local
-from . import live_acceptance_probe as _live_acceptance_probe  # noqa: F401,E402
-from . import youtube_admin_routes as _youtube_admin_routes  # noqa: F401,E402
 
 
 def media_response_metadata(path: str | Path, title: str) -> tuple[str, str]:

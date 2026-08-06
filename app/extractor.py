@@ -155,6 +155,14 @@ def _ytdlp_headers() -> dict:
     return h
 
 
+def _has_real_formats(info: dict) -> bool:
+    """هل يحتوي الرد على صيغ وسائط فعلية (فيديو/صوت) أم storyboards فقط؟"""
+    return any(
+        (f.get("vcodec") or "none") != "none" or (f.get("acodec") or "none") != "none"
+        for f in (info.get("formats") or [])
+    )
+
+
 class UniversalExtractor:
     """المحرك الشامل: أي رابط ← فيديو ← ملف."""
 
@@ -421,6 +429,17 @@ class UniversalExtractor:
             raise DownloadError("yt-dlp لم يُرجع بيانات")
         if info.get("is_live"):
             raise DownloadError("البث المباشر غير مدعوم في هذا المسار")
+        # 🎯 IP محجوب من يوتيوب: الرد قد يحوي storyboards فقط (بلا صيغ فعلية) —
+        # أعد المحاولة مرة واحدة بعميل android (360p مضمون؛ android لا يدعم الكوكيز)
+        if self._is_youtube(url) and not _has_real_formats(info):
+            try:
+                opts_a = dict(opts)
+                opts_a.pop("cookiefile", None)
+                opts_a["extractor_args"] = {"youtube": {"player_client": ["android"]}}
+                with YoutubeDL(opts_a) as ydl:
+                    info = ydl.extract_info(url, download=False)
+            except Exception:  # noqa: BLE001
+                pass
         return info
 
     def _info_to_discovery(self, info: dict) -> dict:
@@ -503,6 +522,26 @@ class UniversalExtractor:
             if files:
                 path = max(files, key=lambda p: p.stat().st_mtime)
         except Exception as first_err:  # noqa: BLE001
+            if info is None and self._is_youtube(url):
+                # 🎯 IP محجوب من يوتيوب (storyboards فقط / فحص روبوت):
+                # أعد المحاولة مرة واحدة بعميل android — 360p مضمون من أي IP
+                # (android لا يدعم الكوكيز — أزل cookiefile)
+                try:
+                    opts_a = self._base_ytdlp_opts(outdir, preferred)
+                    opts_a.pop("cookiefile", None)
+                    opts_a["extractor_args"] = {"youtube": {"player_client": ["android"]}}
+                    opts_a["outtmpl"] = str(outdir / "%(title).120s_alt.%(ext)s")
+                    with YoutubeDL(opts_a) as ydl:
+                        info = ydl.extract_info(url, download=True)
+                    alt_files = [p for p in outdir.glob("*_alt.*") if p.is_file()]
+                    if alt_files:
+                        cand = max(alt_files, key=lambda p: p.stat().st_mtime)
+                        if _has_audio(cand) and (preferred == "audio" or _has_video(cand)):
+                            final = cand.with_name(cand.name.replace("_alt", ""))
+                            cand.rename(final)
+                            path = final
+                except Exception:  # noqa: BLE001
+                    pass
             if info is None:
                 raise first_err
 

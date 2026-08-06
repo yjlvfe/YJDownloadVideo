@@ -12,29 +12,42 @@ _ORIGINAL_INSPECT = UniversalExtractor.inspect
 _ORIGINAL_BASE_OPTIONS = UniversalExtractor._base_ytdlp_opts
 
 
+def _format_record(item: dict[str, Any], *, height: int | None) -> dict[str, Any]:
+    return {
+        "id": str(item.get("format_id") or (height if height is not None else "audio")),
+        "height": height,
+        "ext": str(item.get("ext") or ""),
+        "vcodec": str(item.get("vcodec") or ""),
+        "acodec": str(item.get("acodec") or ""),
+        "filesize": item.get("filesize"),
+        "filesize_approx": item.get("filesize_approx"),
+    }
+
+
 def _real_format_records(info: dict[str, Any], max_filesize: int = 0) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
+    video_records: list[dict[str, Any]] = []
+    audio_records: list[dict[str, Any]] = []
     for item in info.get("formats") or []:
-        if str(item.get("vcodec") or "").lower() in {"", "none"}:
-            continue
-        height = item.get("height")
-        if not isinstance(height, (int, float)) or int(height) <= 0:
-            continue
+        vcodec = str(item.get("vcodec") or "").lower()
+        acodec = str(item.get("acodec") or "").lower()
         size = item.get("filesize") or item.get("filesize_approx")
         if max_filesize and isinstance(size, (int, float)) and size > max_filesize:
             continue
-        records.append(
-            {
-                "id": str(item.get("format_id") or int(height)),
-                "height": int(height),
-                "ext": str(item.get("ext") or ""),
-                "vcodec": str(item.get("vcodec") or ""),
-                "acodec": str(item.get("acodec") or ""),
-                "filesize": item.get("filesize"),
-                "filesize_approx": item.get("filesize_approx"),
-            }
-        )
-    return records
+
+        if vcodec == "none" and acodec not in {"", "none"}:
+            audio_records.append(_format_record(item, height=None))
+            continue
+        if vcodec in {"", "none"}:
+            continue
+
+        height = item.get("height")
+        if not isinstance(height, (int, float)) or int(height) <= 0:
+            continue
+        video_records.append(_format_record(item, height=int(height)))
+
+    if not video_records:
+        return []
+    return [*video_records, *audio_records]
 
 
 def _patched_inspect(self: UniversalExtractor, url: str) -> dict[str, Any]:

@@ -51,9 +51,12 @@ def owner(request):
 
 
 def job_json(j):
+    from .status import read_status
+    st = read_status(j.id)
     return {'id': j.id, 'title': j.title, 'thumbnail': j.thumbnail, 'status': j.status,
             'format_id': j.requested_format, 'file_size': j.file_size, 'duration': j.duration,
             'error': j.error,
+            'pct': (st or {}).get('pct', 0) if st else 0,
             'download_url': f'/download/{j.download_token}' if j.download_token else None}
 
 

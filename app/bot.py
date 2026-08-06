@@ -5,7 +5,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 from .config import settings
 from .db import init_db, SessionLocal, Job, utcnow
 from .security import validate_public_url
-from .worker import process_job
+from .worker import process_job, _owner_cookies
 from .status import read_status, clear_status, load_user_prefs, save_user_prefs
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -192,9 +192,12 @@ def _offered_qualities(formats: list[dict], limit: int = 6) -> list[dict]:
     seen: dict[int, dict] = {}
     for f in formats or []:
         h = f.get("height")
-        if not h or not str(h).isdigit():
+        if not h:
             continue
-        h = int(h)
+        try:
+            h = int(h)
+        except (ValueError, TypeError):
+            continue
         size = f.get("size")
         cur = seen.get(h)
         if cur is None or (size or 0) > (cur.get("size") or 0):
@@ -203,9 +206,12 @@ def _offered_qualities(formats: list[dict], limit: int = 6) -> list[dict]:
 
 
 def _fmt_mb(size) -> str:
-    """حجم مقروء داخل الزر: 229MB / 11.3MB — بلا كسور زائدة."""
+    """حجم مقروء داخل الزر: 1.5GB / 229MB / 11.3MB — بلا كسور زائدة."""
     if not size:
         return ""
+    gb = size / 1073741824  # 1024³
+    if gb >= 1:
+        return f"{gb:.1f}GB"
     mb = size / 1048576
     if mb >= 100:
         return f"{mb:.0f}MB"
@@ -253,13 +259,10 @@ async def _ask_choice(chat_id: int, user_id: int, url: str, context) -> None:
         [("🎬 فيديو", f"pick:v:{nonce}"), ("🎵 صوت", f"pick:a:{nonce}")],
     ])
     try:
-        # رسالة بأزرار فقط: نص فارغ، ولو رفضته تيليجرام نستخدم رمزًا صغيرًا
-        await context.bot.send_message(chat_id, "", reply_markup=kb)
+        # رسالة بأزرار فقط: نص صغير (فارغ ترفضه تيليجرام)
+        await context.bot.send_message(chat_id, "🎯", reply_markup=kb)
     except Exception:  # noqa: BLE001
-        try:
-            await context.bot.send_message(chat_id, "🎯", reply_markup=kb)
-        except Exception:  # noqa: BLE001
-            pass
+        pass
 
 
 async def on_pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -307,7 +310,11 @@ async def on_pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         d: dict | None = None
         try:
             from .extractor import UniversalExtractor
+            # 🍪 فحص الجودات يحتاج كوكيز المستخدم — بدونه تحجب المنصات IP الخادم
+            user_key = f"tg:{pending['user_id']}"
+            cookies_file = _owner_cookies(user_key)
             ex = UniversalExtractor(
+                cookies_file=cookies_file,
                 request_timeout=30,
                 max_filesize=settings.max_file_size_bytes,
             )
@@ -324,7 +331,10 @@ async def on_pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pending["offered"] = offered
         rows: list[list[tuple[str, str]]] = []
         if "best" in offered:
-            rows.append([("⭐ الأفضل", f"pick:q:{nonce}:best")])
+            # 📦 زر الأفضل يعرض الحجم المقدر (أكبر جودة في القائمة)
+            best_size = quals[0].get("size") if quals else None
+            best_label = "⭐ الأفضل" + (f" · {_fmt_mb(best_size)}" if best_size else "")
+            rows.append([(best_label, f"pick:q:{nonce}:best")])
         row: list[tuple[str, str]] = []
         for q in quals:
             # 📦 كل جودة داخل زرها تعرض حجمها الحقيقي — إجباري بلا استثناء
@@ -336,10 +346,18 @@ async def on_pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if row:
             rows.append(row)
         audio_size = d.get("audio_size") if d else None
+        # إن لم يتوفر تدفق صوتي منفصل: قدر من أصغر فيديو مدمج (صوت+فيديو معًا)
+        if not audio_size and quals:
+            audio_size = quals[-1].get("size")  # أصغر دقة = الأقرب لحجم الصوت
         audio_label = "🎵 صوت" + (f" · {_fmt_mb(audio_size)}" if audio_size else "")
         rows.append([(audio_label, f"pick:a:{nonce}"), ("❌ إلغاء", f"pick:x:{nonce}")])
         kb = _pick_kb(rows)
-        note = "" if heights else "\n⚠️ تعذر تحديد الجودات المتاحة — سيُحمَّل الأفضل المتوفر."
+        if heights:
+            note = ""
+        else:
+            # 🩺 سبب فشل الفحص (إن وُجد) — يفيد المستخدم بدل رسالة عامة
+            err_hint = (d or {}).get("_inspect_error", "") if d else ""
+            note = f"\n⚠️ تعذر تحديد الجودات المتاحة.\n{err_hint}\nسيُحمَّل الأفضل المتوفر."
         try:
             await query.message.edit_text("🎬 اختر دقة الفيديو:" + note, reply_markup=kb)
         except Exception:  # noqa: BLE001
@@ -404,8 +422,9 @@ def _bot_instance(progress_cb=None):
 
 def _progress_bar(pct: int, width: int = 12) -> str:
     """شريط تقدم نصي: [██████░░░░░░] 50%"""
+    import math
     pct = max(0, min(100, int(pct)))
-    filled = round(pct / 100 * width)
+    filled = math.ceil(pct / 100 * width)  # ceil: لا يظهر فارغًا حتى عند 95%+
     return "█" * filled + "░" * (width - filled)
 
 
@@ -465,7 +484,11 @@ async def watch_and_deliver(chat_id: int, jid: str, status_msg=None, queue_pos: 
     up_state = {"pct": 0}
 
     def sync_up_cb(current: int, total: int):
-        up_state["pct"] = int(current / total * 100) if total else 0
+        if total:
+            up_state["pct"] = int(current / total * 100)
+        elif current:
+            # حجم غير معروف — نسبة تقريبية كل 10MB وصلت
+            up_state["pct"] = min(99, current // (10 * 1024 * 1024) * 5)
 
     bot = _bot_instance(progress_cb=sync_up_cb)
     try:
@@ -515,14 +538,16 @@ async def watch_and_deliver(chat_id: int, jid: str, status_msg=None, queue_pos: 
         if state == "ready" and path and size is not None:
             if size > settings.telegram_send_limit_bytes:
                 # أكبر من 2GB — لا يمكن إرساله إطلاقًا
+                size_str = _fmt_mb(size)
                 if bar is not None:
-                    bar = await _edit_progress(bar, f"✅ تم التحميل ({size / 1024 / 1024:.0f}MB) — يتجاوز حد 2GB.\nرابط التحميل: {settings.base_url}/download/{token}")
+                    bar = await _edit_progress(bar, f"✅ تم التحميل ({size_str}) — يتجاوز حد 2GB.\nرابط التحميل: {settings.base_url}/download/{token}")
                 else:
-                    await bot.send_message(chat_id, f"✅ تم التحميل ({size / 1024 / 1024:.0f}MB) — يتجاوز حد 2GB.\nرابط التحميل: {settings.base_url}/download/{token}")
+                    await bot.send_message(chat_id, f"✅ تم التحميل ({size_str}) — يتجاوز حد 2GB.\nرابط التحميل: {settings.base_url}/download/{token}")
                 return
             # ← مرحلة الرفع: نفس الرسالة تتحول لشريط رفع
+            size_str = _fmt_mb(size)
             if bar is not None:
-                bar = await _edit_progress(bar, f"✅ تم التحميل ({size / 1024 / 1024:.0f}MB) — ⬆️ جارٍ الرفع [{_progress_bar(0)}] 0%")
+                bar = await _edit_progress(bar, f"✅ تم التحميل ({size_str}) — ⬆️ جارٍ الرفع [{_progress_bar(0)}] 0%")
             up_state["pct"] = 0
             caption = (title or "الفيديو")[:1024]
 

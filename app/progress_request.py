@@ -36,11 +36,18 @@ class _ProgressReader(io.RawIOBase):
     def read(self, n: int = -1) -> bytes:
         data = self._f.read(n)
         self._done += len(data)
-        if self._cb and self._total:
-            step = self._done * 100 // self._total
-            if (step >= self._last_step + 10 or self._done >= self._total) and step > self._last_step:
-                self._last_step = step
-                self._cb(self._done, self._total)
+        if self._cb:
+            if self._total:
+                step = self._done * 100 // self._total
+                if (step >= self._last_step + 10 or self._done >= self._total) and step > self._last_step:
+                    self._last_step = step
+                    self._cb(self._done, self._total)
+            else:
+                # حجم غير معروف: أبلغ بالبايتات المرسلة كل 10MB
+                mb10 = 10 * 1024 * 1024
+                if self._done - self._last_step >= mb10:
+                    self._last_step = self._done
+                    self._cb(self._done, 0)
         return data
 
     def readable(self) -> bool:

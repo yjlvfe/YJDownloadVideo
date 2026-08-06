@@ -163,6 +163,16 @@ def _has_real_formats(info: dict) -> bool:
     )
 
 
+def _clean_youtube_url(url: str) -> str:
+    """ينظف رابط يوتيوب من معاملات القوائم والتشغيل التلقائي (تخرب الفحص)."""
+    import re
+    # احتفظ فقط بـ v= (معرف الفيديو)
+    m = re.search(r"(?:v=|shorts/|youtu\.be/|embed/|live/)([A-Za-z0-9_-]{11})", url)
+    if m:
+        return f"https://www.youtube.com/watch?v={m.group(1)}"
+    return url
+
+
 class UniversalExtractor:
     """المحرك الشامل: أي رابط ← فيديو ← ملف."""
 
@@ -390,12 +400,16 @@ class UniversalExtractor:
             return {"source": "ytdlp", "title": info.get("title"),
                     "thumbnail": info.get("thumbnail"), "duration": info.get("duration"),
                     "formats": formats[:12], "audio_size": audio_size}
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            import logging
+            logging.getLogger("extractor").warning("inspect yt-dlp failed for %s: %s", url, str(e)[:200])
         d = self.discover(url, skip_ytdlp=True)
+        # 🩺 سبب محتمل لفشل الفحص
+        hint = "قد يكون IP الخادم محجوبًا من الموقع — أرسل كوكيز المتصفح للبوت (Get cookies.txt)"
         return {"source": d.get("source"), "title": d.get("title"),
                 "thumbnail": d.get("thumbnail"), "duration": d.get("duration"),
-                "formats": [], "audio_size": None}
+                "formats": [], "audio_size": None,
+                "_inspect_error": hint}
 
     # ------------------------------------------------------------------
     # L1 — yt-dlp
@@ -403,7 +417,10 @@ class UniversalExtractor:
 
     def _base_ytdlp_opts(self, outdir: Path | str, preferred: str = "best") -> dict:
         fmt_map = {
-            "best": "bestvideo*+bestaudio/best",
+            # ⚠️ bestvideo (بدون *) = فيديو فقط — يجبر الدمج مع الصوت.
+            # bestvideo* كان يثق بالصيغ التي تدّعي وجود صوت (كذبة تيك توك HEVC)
+            # وينتج ملفات فيديو بلا صوت، ثم يلجأ لخطة طوارئ بجودة أقل.
+            "best": "bestvideo+bestaudio/best",
             "1080": "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
             "720": "bestvideo[height<=720]+bestaudio/best[height<=720]",
             "480": "bestvideo[height<=480]+bestaudio/best[height<=480]",
@@ -453,32 +470,51 @@ class UniversalExtractor:
 
     def _ytdlp_info(self, url: str) -> dict:
         from yt_dlp import YoutubeDL
+        # 🧹 نظف معاملات القوائم من روابط يوتيوب (تخرب الفحص)
+        clean_url = _clean_youtube_url(url) if self._is_youtube(url) else url
         opts = {
             "quiet": True, "skip_download": True, "noplaylist": True,
             "no_warnings": True, "socket_timeout": 30,
             "http_headers": _ytdlp_headers(),
-            # ⚠️ لا extractor_args لعميل android — يجبر يوتيوب على إرجاع تنسيق واحد فقط (360p).
-            # العميل الافتراضي يعيد كل الجودات (حتى 4K/8K).
         }
         if self.cookies_file:
             opts["cookiefile"] = self.cookies_file
-        with YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+        
+        info = None
+        # المحاولة ١: بدون كوكيز (للمحتوى العام — يعرض كل الجودات من IP نظيف)
+        try:
+            opts_no_cookies = dict(opts)
+            opts_no_cookies.pop("cookiefile", None)
+            with YoutubeDL(opts_no_cookies) as ydl:
+                info = ydl.extract_info(clean_url, download=False)
+        except Exception:  # noqa: BLE001
+            pass
+        
+        # المحاولة ٢: مع كوكيز (للمحتوى المقيد — Geographic/Age-restricted)
+        if self._is_youtube(url) and self.cookies_file and (
+                info is None or not _has_real_formats(info)):
+            try:
+                with YoutubeDL(opts) as ydl:  # opts فيها cookiefile
+                    info = ydl.extract_info(clean_url, download=False)
+            except Exception:  # noqa: BLE001
+                pass
+        
+        # 🛑 IP محجوب (SABR): web client يرجع storyboards فقط أو يرمي استثناء.
+        # نجرب android كخطة طوارئ — 360p على الأقل.
+        if self._is_youtube(url) and (info is None or not _has_real_formats(info)):
+            try:
+                opts_a = dict(opts)
+                opts_a.pop("cookiefile", None)  # android لا يدعم الكوكيز
+                opts_a["extractor_args"] = {"youtube": {"player_client": ["android"]}}
+                with YoutubeDL(opts_a) as ydl:
+                    info = ydl.extract_info(clean_url, download=False)
+            except Exception:  # noqa: BLE001
+                pass
+        
         if not info:
             raise DownloadError("yt-dlp لم يُرجع بيانات")
         if info.get("is_live"):
             raise DownloadError("البث المباشر غير مدعوم في هذا المسار")
-        # 🎯 IP محجوب من يوتيوب: الرد قد يحوي storyboards فقط (بلا صيغ فعلية) —
-        # أعد المحاولة مرة واحدة بعميل android (360p مضمون؛ android لا يدعم الكوكيز)
-        if self._is_youtube(url) and not _has_real_formats(info):
-            try:
-                opts_a = dict(opts)
-                opts_a.pop("cookiefile", None)
-                opts_a["extractor_args"] = {"youtube": {"player_client": ["android"]}}
-                with YoutubeDL(opts_a) as ydl:
-                    info = ydl.extract_info(url, download=False)
-            except Exception:  # noqa: BLE001
-                pass
         return info
 
     def _info_to_discovery(self, info: dict) -> dict:
@@ -551,20 +587,29 @@ class UniversalExtractor:
         from yt_dlp import YoutubeDL
         info = None
         path = None
-        # محاولة نظيفة واحدة بالعميل الافتراضي — لا تعدد عملاء ولا إعادة محاولة
-        # (كل طلب إضافي يرفع علم الروبوت؛ الحظر يُعالَج عبر L4 بلا لمس يوتيوب)
+        # المحاولة ١: بدون كوكيز (للمحتوى العام — جودة كاملة من IP نظيف)
         try:
             opts = self._base_ytdlp_opts(outdir, preferred)
+            opts.pop("cookiefile", None)
             with YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
             files = [p for p in outdir.iterdir() if p.is_file()]
             if files:
                 path = max(files, key=lambda p: p.stat().st_mtime)
         except Exception as first_err:  # noqa: BLE001
+            # المحاولة ٢: مع كوكيز (للمحتوى المقيد)
+            if info is None and self.cookies_file and self._is_youtube(url):
+                try:
+                    opts = self._base_ytdlp_opts(outdir, preferred)
+                    with YoutubeDL(opts) as ydl:
+                        info = ydl.extract_info(url, download=True)
+                    files = [p for p in outdir.iterdir() if p.is_file()]
+                    if files:
+                        path = max(files, key=lambda p: p.stat().st_mtime)
+                except Exception:  # noqa: BLE001
+                    pass
+            # المحاولة ٣: android (360p مضمون من أي IP)
             if info is None and self._is_youtube(url):
-                # 🎯 IP محجوب من يوتيوب (storyboards فقط / فحص روبوت):
-                # أعد المحاولة مرة واحدة بعميل android — 360p مضمون من أي IP
-                # (android لا يدعم الكوكيز — أزل cookiefile)
                 try:
                     opts_a = self._base_ytdlp_opts(outdir, preferred)
                     opts_a.pop("cookiefile", None)
@@ -585,10 +630,21 @@ class UniversalExtractor:
                 raise first_err
 
         # بعض المواقع (تيك توك) تعلن صوتًا ولا توفره فعليًا (HEVC بلا صوت).
-        # إذا فشل الاستخراج أو خرج الملف بلا صوت — أعد المحاولة بمصدر h264 مدمج (صوت مضمون).
+        # إذا فشل الاستخراج أو خرج الملف بلا صوت — أعد المحاولة بصيغة فيديو+صوت منفصلين
+        # (دمج h264 يضمن صوتًا حقيقيًا) مع احترام ارتفاع الجودة المطلوب.
         if info is None or path is None or not _has_audio(path):
             opts2 = self._base_ytdlp_opts(outdir, preferred)
-            opts2["format"] = "best[ext=mp4][vcodec^=h264]/best"
+            # 🎯 صيغة الإعادة: نفضل دمج h264 (صوت مضمون) مع احترام الدقة المطلوبة
+            # bestvideo (بدون *) = فيديو فقط، يُدمج مع bestaudio — يتجنب كذبة HEVC
+            if preferred.isdigit():
+                h = preferred
+                opts2["format"] = (f"bestvideo[height<={h}][ext=mp4][vcodec^=h264]+bestaudio/"
+                                   f"bestvideo[height<={h}][ext=mp4]+bestaudio/"
+                                   f"best[height<={h}][ext=mp4][vcodec^=h264]/best[height<={h}]")
+            else:
+                opts2["format"] = ("bestvideo[ext=mp4][vcodec^=h264]+bestaudio/"
+                                   "bestvideo[ext=mp4]+bestaudio/"
+                                   "best[ext=mp4][vcodec^=h264]/best")
             # اسم مؤقت مختلف — لا نكتب فوق الملف الأول
             opts2["outtmpl"] = str(outdir / "%(title).120s_retry.%(ext)s")
             with YoutubeDL(opts2) as ydl:

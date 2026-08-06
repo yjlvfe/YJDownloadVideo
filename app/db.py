@@ -39,6 +39,3 @@ SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 def init_db(): Base.metadata.create_all(engine)
 
 def utcnow(): return datetime.now(timezone.utc)
-
-def get_job(job_id):
-    with SessionLocal() as db: return db.get(Job, job_id)

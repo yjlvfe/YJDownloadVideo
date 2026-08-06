@@ -28,6 +28,26 @@ def test_live_lease_protects_expired_download_directory(tmp_path: Path) -> None:
     assert result.removed_count == 0
 
 
+def test_cleanup_discovers_live_leases_without_caller_bookkeeping(tmp_path: Path) -> None:
+    storage = tmp_path / "storage"
+    download = storage / "job-auto"
+    download.mkdir(parents=True)
+    (download / "video.mp4").write_bytes(b"video")
+    os.utime(download, (100, 100))
+
+    registry = StorageLeaseRegistry(storage, stale_after_seconds=300)
+    with registry.lease(download, now=950):
+        result = cleanup_expired_storage(
+            storage,
+            now=1000,
+            ttl_seconds=100,
+            active_paths=set(),
+        )
+
+    assert download.exists()
+    assert result.removed_count == 0
+
+
 def test_released_lease_allows_expired_directory_cleanup(tmp_path: Path) -> None:
     storage = tmp_path / "storage"
     download = storage / "job-2"

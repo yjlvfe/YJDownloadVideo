@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from .storage_leases import LEASE_DIRECTORY_NAME
+
 
 @dataclass(frozen=True, slots=True)
 class CleanupResult:
@@ -46,13 +48,24 @@ def _entry_bytes(path: Path) -> int:
     return total
 
 
+def _entry_contains_active_path(entry: Path, active_paths: set[Path]) -> bool:
+    resolved_entry = entry.resolve(strict=False)
+    for active in active_paths:
+        try:
+            active.relative_to(resolved_entry)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
 def cleanup_expired_storage(
     root: str | Path,
     *,
     now: float,
     ttl_seconds: int,
     active_paths: Iterable[str | Path],
-    temporary_grace_seconds: int = 3 * 60 * 60,
+    temporary_grace_seconds: int = 8 * 60 * 60,
 ) -> CleanupResult:
     root_path = Path(root)
     root_path.mkdir(parents=True, exist_ok=True)
@@ -67,7 +80,9 @@ def cleanup_expired_storage(
     temporary_grace = max(ttl, int(temporary_grace_seconds))
 
     for entry in root_path.iterdir():
-        if entry.resolve(strict=False) in active:
+        if entry.name == LEASE_DIRECTORY_NAME:
+            continue
+        if _entry_contains_active_path(entry, active):
             continue
         if entry.is_symlink():
             entry.unlink(missing_ok=True)
@@ -100,6 +115,8 @@ def storage_stats(root: str | Path) -> StorageStats:
     file_count = 0
     total_bytes = 0
     for path in root_path.rglob("*"):
+        if LEASE_DIRECTORY_NAME in path.parts:
+            continue
         if not path.is_file() or path.is_symlink():
             continue
         file_count += 1

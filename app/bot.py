@@ -216,6 +216,16 @@ def _fmt_mb(size) -> str:
     return f"{mb:.1f}MB"
 
 
+def _delete_media(file_path: str) -> None:
+    """🗑️ حذف فوري مضمون للملف ومجلده بالكامل — لا يعتمد على كائن SQLAlchemy."""
+    try:
+        p = Path(file_path)
+        p.unlink(missing_ok=True)
+        shutil.rmtree(p.parent, ignore_errors=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def delete_job_files(job) -> None:
     """🗑️ حذف فوري لملف المهمة ومجلدها وتحديث الصف (نقطة عدم التكدس)."""
     try:
@@ -543,6 +553,9 @@ async def watch_and_deliver(chat_id: int, jid: str, status_msg=None):
                     bar = await _edit_progress(bar, f"✅ تم التحميل ({size_str}) — يتجاوز حد 2GB.\nرابط التحميل: {settings.base_url}/download/{token}")
                 else:
                     await bot.send_message(chat_id, f"✅ تم التحميل ({size_str}) — يتجاوز حد 2GB.\nرابط التحميل: {settings.base_url}/download/{token}")
+                # 🗑️ حذف فوري حتى لو تجاوز 2GB — لا تكدس أبدًا
+                _delete_media(path)
+                clear_status(jid)
                 return
             # ← مرحلة الرفع: نفس الرسالة تتحول لشريط رفع
             size_str = _fmt_mb(size)
@@ -592,6 +605,9 @@ async def watch_and_deliver(chat_id: int, jid: str, status_msg=None):
                     bar = await _edit_progress(bar, f"⚠️ تعذر الإرسال المباشر ({str(e)[:100]}).\nرابط التحميل: {settings.base_url}/download/{token}")
                 else:
                     await bot.send_message(chat_id, f"⚠️ تعذر الإرسال المباشر ({str(e)[:100]}).\nرابط التحميل: {settings.base_url}/download/{token}")
+                # 🗑️ حتى لو فشل الرفع — نحذف الملف من التخزين (رابط التحميل المباشر يكفي)
+                _delete_media(path)
+                clear_status(jid)
                 return
             # 🧹 قرار المستخدم (2026-08): بعد وصول المقطع يُحذف شريط الحالة — يبقى المقطع وحده فقط
             if bar is not None:
@@ -599,9 +615,9 @@ async def watch_and_deliver(chat_id: int, jid: str, status_msg=None):
                     await bar.delete()
                 except Exception:  # noqa: BLE001
                     pass
-            # 🗑️ الحذف الفوري — نقطة عدم التكدس: الملف يُمحى لحظة وصوله للمستخدم
-            if j and j.source == "telegram":
-                delete_job_files(j)
+            # 🗑️ حذف فوري مضمون — الملف يُمحى من التخزين لحظة وصوله للمستخدم
+            # (باستخدام path المضمون بدل كائن SQLAlchemy المنفصل الذي قد يفشل بصمت)
+            _delete_media(path)
             clear_status(jid)
             return
         elif state == "failed":

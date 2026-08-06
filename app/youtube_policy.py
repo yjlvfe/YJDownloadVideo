@@ -12,25 +12,44 @@ FRAGMENT_FORBIDDEN = "youtube_fragment_forbidden"
 UNSUPPORTED_CLIENT = "youtube_unsupported_client"
 TRANSIENT = "youtube_transient"
 
+_KNOWN_FAILURES = frozenset(
+    {
+        RATE_LIMITED,
+        BOT_CHECK,
+        LOGIN_REQUIRED,
+        FRAGMENT_FORBIDDEN,
+        UNSUPPORTED_CLIENT,
+        TRANSIENT,
+        "youtube_circuit_open",
+        "youtube_no_media_file",
+        "youtube_no_metadata",
+        "youtube_output_without_audio",
+        "youtube_output_without_video",
+    }
+)
 _BLOCKING_FAILURES = frozenset({RATE_LIMITED, BOT_CHECK, LOGIN_REQUIRED})
 
 
 def classify_youtube_error(exc: BaseException | str) -> str:
     text = str(exc).strip().lower().replace("’", "'")
-
+    if text in _KNOWN_FAILURES:
+        return text
     if "googlevideo" in text and any(value in text for value in ("403", "forbidden")):
         return FRAGMENT_FORBIDDEN
     if "429" in text or "too many requests" in text:
         return RATE_LIMITED
     if "confirm you're not a bot" in text or "confirm you are not a bot" in text:
         return BOT_CHECK
-    if any(value in text for value in (
-        "login_required",
-        "login required",
-        "log in to continue",
-        "sign in to continue",
-        "authentication required",
-    )):
+    if any(
+        value in text
+        for value in (
+            "login_required",
+            "login required",
+            "log in to continue",
+            "sign in to continue",
+            "authentication required",
+        )
+    ):
         return LOGIN_REQUIRED
     if "unsupported client" in text or "skipping unsupported client" in text:
         return UNSUPPORTED_CLIENT
@@ -50,11 +69,7 @@ class CircuitSnapshot:
 
 
 class YouTubeCircuit:
-    """Small storage-agnostic circuit breaker for YouTube egress blocks.
-
-    The mutable mapping can be a process dictionary today and a durable adapter
-    later. Only one canary request is admitted after the cooldown expires.
-    """
+    """Small storage-agnostic circuit breaker for YouTube egress blocks."""
 
     def __init__(
         self,
@@ -95,11 +110,12 @@ class YouTubeCircuit:
     def record_failure(self, classification: str) -> None:
         self.store["last_failure"] = str(classification)
         if classification not in _BLOCKING_FAILURES:
+            self.store["canary_in_flight"] = False
             return
 
         failures = int(self.store.get("failure_count") or 0) + 1
         exponent = min(6, max(0, failures - 1))
-        cooldown = min(self.max_cooldown_seconds, self.cooldown_seconds * (2 ** exponent))
+        cooldown = min(self.max_cooldown_seconds, self.cooldown_seconds * (2**exponent))
         self.store["failure_count"] = failures
         self.store["state"] = "open"
         self.store["opened_until"] = float(self.clock()) + cooldown

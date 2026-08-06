@@ -17,8 +17,8 @@ from .media_choice import (
     is_quality_key,
     normalize_qualities,
     progress_step,
-    quality_options,
     safe_media_title,
+    selector_for_quality,
 )
 from .telegram_api import TelegramAPI
 
@@ -56,20 +56,17 @@ def _quality_label(item: QualityOption) -> str:
     return f"{item.label} • ~{mib:.0f}MB"
 
 
-# Public quality choices come from one registry so labels, keys, callbacks, and
-# yt-dlp selectors cannot drift independently.
-_PRESET_QUALITIES = quality_options()
+def _best_quality() -> QualityOption:
+    return QualityOption(
+        key="best",
+        label="⭐ الأفضل",
+        selector=selector_for_quality("best"),
+        size=None,
+    )
 
 
 def _supported_callback_quality(key: str) -> bool:
-    if is_quality_key(key):
-        return True
-    if key == "original":
-        return True
-    if key.isdigit():
-        height = int(key)
-        return 144 <= height <= 1080
-    return False
+    return is_quality_key(key)
 
 
 def parse_callback(value: str) -> tuple[str, str, str | None] | None:
@@ -208,7 +205,6 @@ class TelegramFlow:
             await self.api.send_message(chat_id, f"⚠️ {str(exc)[:180]}")
             return
 
-        # ⚡ اختيار فوري: بدون فحص الرابط وبدون صورة معاينة — أزرار فورًا (سريع وخفيف)
         token = self.selections.create(
             owner_id=owner_id,
             value={"url": url, "title": "", "qualities": [], "thumbnail": ""},
@@ -246,10 +242,7 @@ class TelegramFlow:
             max_filesize=self.settings.max_file_size_bytes,
         )
         try:
-            result = extractor.inspect(url)
-            if str(result.get("source") or "") != "ytdlp":
-                result["formats"] = []
-            return result
+            return extractor.inspect(url)
         finally:
             extractor.cleanup()
 
@@ -276,11 +269,31 @@ class TelegramFlow:
             return
         await self.api.answer_callback_query(callback_id)
 
-        qualities: list[QualityOption] = list(session.get("qualities") or [])
-        if not qualities:
-            # اختيار فوري: جودات جاهزة بدون فحص الرابط
-            qualities = list(_PRESET_QUALITIES)
         if action == "video":
+            qualities = [_best_quality()]
+            try:
+                inspected = await self._inspect_with_progress(
+                    chat_id,
+                    message_id,
+                    str(session["url"]),
+                )
+                real_qualities = [
+                    option
+                    for option in normalize_qualities(inspected.get("formats") or [])
+                    if option.key not in {"best", "original"}
+                ]
+                qualities.extend(reversed(real_qualities))
+                session["title"] = str(inspected.get("title") or session.get("title") or "")
+                session["thumbnail"] = str(
+                    inspected.get("thumbnail") or session.get("thumbnail") or ""
+                )
+            except Exception:  # noqa: BLE001
+                await self._safe_edit(
+                    chat_id,
+                    message_id,
+                    "⚠️ تعذر فحص الجودات؛ سيظهر خيار الأفضل فقط.",
+                )
+            session["qualities"] = qualities
             await self.api.edit_message_reply_markup(
                 chat_id,
                 message_id,
@@ -301,6 +314,7 @@ class TelegramFlow:
             )
             return
 
+        qualities: list[QualityOption] = list(session.get("qualities") or [])
         selected = next((item for item in qualities if item.key == quality_key), None)
         if selected is None:
             await self.api.answer_callback_query(
@@ -611,7 +625,6 @@ class TelegramFlow:
         if "drm" in lowered:
             return "المقطع محمي بتشفير DRM ولا يمكن تنزيله."
         if any(value in lowered for value in ("login", "cookie", "forbidden", "403")):
-            # أضف التفاصيل التقنية لسهولة التشخيص (مثل انتهاء الجلسة أو حجب الخادم)
             return f"الموقع يطلب تسجيل دخول أو يمنع التحميل من الخادم. ({text[:120]})"
         return text[:220]
 

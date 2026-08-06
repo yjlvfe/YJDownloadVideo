@@ -1,24 +1,29 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import mimetypes
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
+from starlette.background import BackgroundTask
 
 from . import main as main_module
 from . import pot_runtime_patch as _pot_runtime_patch  # noqa: F401
 from .config import settings
 from .db import Job, SessionLocal
 from .durable_runtime import get_job_queue
+from .job_expiration import expire_job_artifacts
 from .main import app as fastapi_app
 from .media_choice import safe_media_title
 from .rate_limit import SlidingWindowLimiter
 from .redaction import sanitize_external_error
 from .security import read_token
+from .storage_maintenance import run_storage_maintenance
 from .telegram_flow import TelegramFlow
 
 
@@ -139,6 +144,12 @@ def _install_download_route() -> None:
                 job.file_path,
                 filename=filename,
                 media_type=media_type,
+                background=BackgroundTask(
+                    expire_job_artifacts,
+                    job_id,
+                    storage_root=settings.storage_path,
+                    session_factory=SessionLocal,
+                ),
             )
 
     fastapi_app.add_api_route(
@@ -150,6 +161,34 @@ def _install_download_route() -> None:
 
 
 _install_download_route()
+
+
+async def _storage_maintenance_loop() -> None:
+    while True:
+        await asyncio.sleep(max(60, int(settings.cleanup_interval_seconds)))
+        await asyncio.to_thread(
+            run_storage_maintenance,
+            storage_root=settings.storage_path,
+            now=datetime.now(timezone.utc),
+            ttl_seconds=settings.file_ttl_seconds,
+            session_factory=SessionLocal,
+        )
+
+
+main_module._cleanup_loop = _storage_maintenance_loop
+
+
+@fastapi_app.on_event("startup")
+async def reconcile_storage_on_startup() -> None:
+    if settings.vercel_mode:
+        return
+    await asyncio.to_thread(
+        run_storage_maintenance,
+        storage_root=settings.storage_path,
+        now=datetime.now(timezone.utc),
+        ttl_seconds=settings.file_ttl_seconds,
+        session_factory=SessionLocal,
+    )
 
 
 class RateLimitedASGI:

@@ -55,7 +55,8 @@ async def reset_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def _create_job(user_id: int, chat_id: int, url: str, fmt: str, context) -> str:
+async def _create_job(user_id: int, chat_id: int, url: str, fmt: str, context,
+                      received_id: int | None = None) -> str:
     """ينشئ مهمة ويرسل رسالة الطابور — مشترك بين الاختيار والتفضيلات."""
     user_key = f"tg:{user_id}"
     with SessionLocal() as db:
@@ -70,9 +71,11 @@ async def _create_job(user_id: int, chat_id: int, url: str, fmt: str, context) -
         jid = job.id
     label = _quality_label(fmt)
     if queue_pos == 1:
-        await context.bot.send_message(chat_id, f"📥 تم الاستلام ({label}) — جارٍ المعالجة…")
+        ack = await context.bot.send_message(chat_id, f"📥 تم الاستلام ({label}) — جارٍ المعالجة…")
     else:
-        await context.bot.send_message(chat_id, f"📥 تمت الإضافة للطابور — موضعك #{queue_pos} ({label})")
+        ack = await context.bot.send_message(chat_id, f"📥 تمت الإضافة للطابور — موضعك #{queue_pos} ({label})")
+    # تتبّع رسائل الحالة لحذفها كلها بعد وصول المقطع — لا تبقى أي رسالة (قرار المستخدم)
+    _JOB_MSGS[jid] = {"chat_id": chat_id, "received_id": received_id, "ack_id": ack.message_id}
     if WEBHOOK_MODE:
         await watch_and_deliver(chat_id, jid)
     else:
@@ -128,7 +131,8 @@ async def video_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # نظام اختيار التحميل (فيديو/صوت/دقة) — بدل زر MP3
 # ============================================================
 
-PENDING: dict[str, dict] = {}      # nonce -> {user_id, chat_id, url, created, offered?}
+PENDING: dict[str, dict] = {}      # nonce -> {user_id, chat_id, url, created, offered?, received_id?}
+_JOB_MSGS: dict[str, dict] = {}    # jid -> {chat_id, received_id, ack_id} — تُحذف كلها بعد التسليم
 _PICK_TTL = 180                     # 3 دقائق لاتخاذ القرار
 
 _QUALITY_LABELS = {"best": "⭐ الأفضل", "audio": "🎵 صوت"}
@@ -199,12 +203,14 @@ def _pick_kb(buttons: list[list[tuple[str, str]]]) -> InlineKeyboardMarkup:
     ])
 
 
-async def _ask_choice(chat_id: int, user_id: int, url: str, context) -> None:
+async def _ask_choice(chat_id: int, user_id: int, url: str, context,
+                      received_id: int | None = None) -> None:
     """يعرض أزرار فيديو/صوت/إلغاء للرابط المعلّق."""
     _cleanup_pending()
     nonce = secrets.token_urlsafe(8)
     PENDING[nonce] = {"user_id": user_id, "chat_id": chat_id,
-                      "url": url, "created": time.time()}
+                      "url": url, "created": time.time(),
+                      "received_id": received_id}
     kb = _pick_kb([
         [("🎬 فيديو", f"pick:v:{nonce}"), ("🎵 صوت", f"pick:a:{nonce}")],
         [("❌ إلغاء", f"pick:x:{nonce}")],
@@ -319,7 +325,8 @@ async def on_pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.delete()
     except Exception:  # noqa: BLE001
         pass
-    await _create_job(pending["user_id"], pending["chat_id"], pending["url"], fmt, context)
+    await _create_job(pending["user_id"], pending["chat_id"], pending["url"], fmt, context,
+                      received_id=pending.get("received_id"))
 
 
 async def receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -333,8 +340,9 @@ async def receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mode = _pref_mode(update.effective_user.id)
     if mode == "ask":
         # الوضع الطبيعي: اختيار فيديو/صوت/دقة عند كل رابط
-        await update.message.reply_text("📥 تم استلام الرابط…")
-        await _ask_choice(update.effective_chat.id, update.effective_user.id, url, context)
+        recv = await update.message.reply_text("📥 تم استلام الرابط…")
+        await _ask_choice(update.effective_chat.id, update.effective_user.id, url, context,
+                          received_id=recv.message_id)
     else:
         # وضع ثابت (/audio أو /video): بدون سؤال
         fmt = "audio" if mode == "audio" else "best"
@@ -457,6 +465,7 @@ async def watch_and_deliver(chat_id: int, jid: str):
     if state == "ready" and path and size is not None:
         if size > settings.telegram_send_limit_bytes:
             # أكبر من 2GB — لا يمكن إرساله إطلاقًا
+            _JOB_MSGS.pop(jid, None)
             if bar is not None:
                 bar = await _edit_progress(bar, f"✅ تم التحميل ({size / 1024 / 1024:.0f}MB) — يتجاوز حد 2GB.\nرابط التحميل: {settings.base_url}/download/{token}")
             else:
@@ -505,12 +514,22 @@ async def watch_and_deliver(chat_id: int, jid: str):
             await send_task
         except Exception as e:  # noqa: BLE001
             log.exception("send failed, falling back to link")
+            _JOB_MSGS.pop(jid, None)
             if bar is not None:
                 bar = await _edit_progress(bar, f"⚠️ تعذر الإرسال المباشر ({str(e)[:100]}).\nرابط التحميل: {settings.base_url}/download/{token}")
             else:
                 await bot.send_message(chat_id, f"⚠️ تعذر الإرسال المباشر ({str(e)[:100]}).\nرابط التحميل: {settings.base_url}/download/{token}")
             return
-        # أناقة احترافية: يُحذف شريط التقدم ويبقى المقطع فقط
+        # 🧹 قرار المستخدم (2026-08): بعد وصول المقطع تُحذف كل رسائل الحالة — لا تبقى أي رسالة
+        msgs = _JOB_MSGS.pop(jid, None)
+        if msgs:
+            for mid in (msgs.get("ack_id"), msgs.get("received_id")):
+                if mid:
+                    try:
+                        await bot.delete_message(msgs["chat_id"], mid)
+                    except Exception:  # noqa: BLE001
+                        pass
+        # شريط التقدم يُحذف أيضًا — يبقى المقطع وحده فقط
         if bar is not None:
             try:
                 await bar.delete()
@@ -522,6 +541,7 @@ async def watch_and_deliver(chat_id: int, jid: str):
         clear_status(jid)
         return
     elif state == "failed":
+        _JOB_MSGS.pop(jid, None)
         reason = ""
         if err:
             low = err.lower()

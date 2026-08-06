@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     storage_dir: str = "./storage"
     file_ttl_seconds: int = 3600
     max_file_size_bytes: int = 2 * 1024 * 1024 * 1024
-    max_duration_seconds: int = 7200
+    max_duration_seconds: int = 0  # 0 = غير محدودة إطلاقًا (قرار المستخدم 2026-08)
     rate_limit_per_minute: int = 10
     telegram_bot_token: str = ""
     telegram_bot_api_base: str = ""  # e.g. http://tba:8081 — خادم Bot API محلي (يرفع حد الإرسال إلى 2GB)

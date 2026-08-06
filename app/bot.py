@@ -56,8 +56,8 @@ async def reset_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _create_job(user_id: int, chat_id: int, url: str, fmt: str, context,
-                      received_id: int | None = None) -> str:
-    """ينشئ مهمة ويرسل رسالة الطابور — مشترك بين الاختيار والتفضيلات."""
+                      status_msg=None, queue_pos: int = 1) -> str:
+    """ينشئ مهمة — رسالة الحالة الواحدة (الأزرار نفسها) تتحول لشريط تقدم حي."""
     user_key = f"tg:{user_id}"
     with SessionLocal() as db:
         queue_pos = db.query(Job).filter(
@@ -69,17 +69,12 @@ async def _create_job(user_id: int, chat_id: int, url: str, fmt: str, context,
         db.add(job)
         db.commit()
         jid = job.id
-    label = _quality_label(fmt)
-    if queue_pos == 1:
-        ack = await context.bot.send_message(chat_id, f"📥 تم الاستلام ({label}) — جارٍ المعالجة…")
-    else:
-        ack = await context.bot.send_message(chat_id, f"📥 تمت الإضافة للطابور — موضعك #{queue_pos} ({label})")
-    # تتبّع رسائل الحالة لحذفها كلها بعد وصول المقطع — لا تبقى أي رسالة (قرار المستخدم)
-    _JOB_MSGS[jid] = {"chat_id": chat_id, "received_id": received_id, "ack_id": ack.message_id}
+    # لا رسائل تأكيد منفصلة — رسالة الحالة الواحدة تتكفل بكل شيء (قرار المستخدم 2026-08)
     if WEBHOOK_MODE:
-        await watch_and_deliver(chat_id, jid)
+        await watch_and_deliver(chat_id, jid, status_msg=status_msg, queue_pos=queue_pos)
     else:
-        asyncio.create_task(watch_and_deliver(chat_id, jid))
+        asyncio.create_task(watch_and_deliver(chat_id, jid, status_msg=status_msg,
+                                              queue_pos=queue_pos))
     return jid
 
 
@@ -131,8 +126,7 @@ async def video_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # نظام اختيار التحميل (فيديو/صوت/دقة) — بدل زر MP3
 # ============================================================
 
-PENDING: dict[str, dict] = {}      # nonce -> {user_id, chat_id, url, created, offered?, received_id?}
-_JOB_MSGS: dict[str, dict] = {}    # jid -> {chat_id, received_id, ack_id} — تُحذف كلها بعد التسليم
+PENDING: dict[str, dict] = {}      # nonce -> {user_id, chat_id, url, created, offered?}
 _PICK_TTL = 180                     # 3 دقائق لاتخاذ القرار
 
 _QUALITY_LABELS = {"best": "⭐ الأفضل", "audio": "🎵 صوت"}
@@ -203,22 +197,23 @@ def _pick_kb(buttons: list[list[tuple[str, str]]]) -> InlineKeyboardMarkup:
     ])
 
 
-async def _ask_choice(chat_id: int, user_id: int, url: str, context,
-                      received_id: int | None = None) -> None:
-    """يعرض أزرار فيديو/صوت/إلغاء للرابط المعلّق."""
+async def _ask_choice(chat_id: int, user_id: int, url: str, context) -> None:
+    """يعرض أزرار فيديو/صوت فقط — بلا أي رسالة نصية (قرار المستخدم 2026-08)."""
     _cleanup_pending()
     nonce = secrets.token_urlsafe(8)
     PENDING[nonce] = {"user_id": user_id, "chat_id": chat_id,
-                      "url": url, "created": time.time(),
-                      "received_id": received_id}
+                      "url": url, "created": time.time()}
     kb = _pick_kb([
         [("🎬 فيديو", f"pick:v:{nonce}"), ("🎵 صوت", f"pick:a:{nonce}")],
-        [("❌ إلغاء", f"pick:x:{nonce}")],
     ])
     try:
-        await context.bot.send_message(chat_id, "🎯 اختر نوع التحميل:", reply_markup=kb)
+        # رسالة بأزرار فقط: نص فارغ، ولو رفضته تيليجرام نستخدم رمزًا صغيرًا
+        await context.bot.send_message(chat_id, "", reply_markup=kb)
     except Exception:  # noqa: BLE001
-        pass
+        try:
+            await context.bot.send_message(chat_id, "🎯", reply_markup=kb)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 async def on_pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -318,15 +313,11 @@ async def on_pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("❌ اختيار غير صالح")
         return
 
-    # إنشاء المهمة بالجودة المختارة
+    # 🎯 نفس رسالة الأزرار تتحول لشريط الحالة — لا رسائل جديدة ولا حذف (قرار المستخدم 2026-08)
     PENDING.pop(nonce, None)
     await query.answer("تم ✅")
-    try:
-        await query.message.delete()
-    except Exception:  # noqa: BLE001
-        pass
     await _create_job(pending["user_id"], pending["chat_id"], pending["url"], fmt, context,
-                      received_id=pending.get("received_id"))
+                      status_msg=query.message)
 
 
 async def receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -339,10 +330,8 @@ async def receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     mode = _pref_mode(update.effective_user.id)
     if mode == "ask":
-        # الوضع الطبيعي: اختيار فيديو/صوت/دقة عند كل رابط
-        recv = await update.message.reply_text("📥 تم استلام الرابط…")
-        await _ask_choice(update.effective_chat.id, update.effective_user.id, url, context,
-                          received_id=recv.message_id)
+        # الوضع الطبيعي: زرين فقط (فيديو/صوت) — بلا أي رسالة نصية
+        await _ask_choice(update.effective_chat.id, update.effective_user.id, url, context)
     else:
         # وضع ثابت (/audio أو /video): بدون سؤال
         fmt = "audio" if mode == "audio" else "best"
@@ -421,8 +410,12 @@ async def _edit_progress(msg, text: str):
         return msg
 
 
-async def watch_and_deliver(chat_id: int, jid: str):
-    """رسالة شريط تقدم واحدة: تحميل 0→100% ← رفع 0→100% ← الملف. بلا إزعاج رسائل."""
+async def watch_and_deliver(chat_id: int, jid: str, status_msg=None, queue_pos: int = 1):
+    """رسالة حالة واحدة حية: طابور ← تحميل % كل ثانية ← رفع % كل ثانية ← الملف ← تختفي.
+
+    (قرار المستخدم 2026-08: بلا رسائل كثيرة — نفس رسالة الأزرار تتحول وتتحدث كل ثانية،
+    وبعد الوصول يُحذف الشريط ويبقى المقطع وحده.)
+    """
     up_state = {"pct": 0}
 
     def sync_up_cb(current: int, total: int):
@@ -430,24 +423,33 @@ async def watch_and_deliver(chat_id: int, jid: str):
 
     bot = _bot_instance(progress_cb=sync_up_cb)
     bar = None
-    try:
-        bar = await bot.send_message(chat_id, f"⬇️ جارٍ التحميل [{_progress_bar(0)}] 0%")
-    except Exception:  # noqa: BLE001
-        pass
+    if status_msg is not None:
+        # نفس رسالة الأزرار تتحول لشريط الحالة
+        bar = await _edit_progress(status_msg,
+                                   f"⏳ في الطابور — موضعك #{queue_pos}" if queue_pos > 1
+                                   else f"⬇️ جارٍ التحميل [{_progress_bar(0)}] 0%")
+    if bar is None:
+        try:
+            bar = await bot.send_message(chat_id,
+                                         f"⏳ في الطابور — موضعك #{queue_pos}" if queue_pos > 1
+                                         else f"⬇️ جارٍ التحميل [{_progress_bar(0)}] 0%")
+        except Exception:  # noqa: BLE001
+            pass
 
-    last_pct = -1
+    last_text = ""
     task = asyncio.create_task(asyncio.to_thread(process_job, jid))
     while not task.done():
         st = read_status(jid)
         if st and st.get("stage") in ("downloading", "preparing"):
-            pct = st.get("pct", 0)
-            if pct >= last_pct + 10 and bar is not None:
-                if st["stage"] == "preparing":
-                    bar = await _edit_progress(bar, "🔧 جارٍ دمج الصوت والفيديو…")
-                else:
-                    bar = await _edit_progress(bar, f"⬇️ جارٍ التحميل [{_progress_bar(pct)}] {pct}%")
-                last_pct = pct
-        await asyncio.sleep(2)
+            if st["stage"] == "preparing":
+                text = "🔧 جارٍ دمج الصوت والفيديو…"
+            else:
+                pct = st.get("pct", 0)
+                text = f"⬇️ جارٍ التحميل [{_progress_bar(pct)}] {pct}%"
+            if text != last_text and bar is not None:
+                bar = await _edit_progress(bar, text)
+                last_text = text
+        await asyncio.sleep(1)
     try:
         await task
     except Exception as e:  # noqa: BLE001
@@ -465,7 +467,6 @@ async def watch_and_deliver(chat_id: int, jid: str):
     if state == "ready" and path and size is not None:
         if size > settings.telegram_send_limit_bytes:
             # أكبر من 2GB — لا يمكن إرساله إطلاقًا
-            _JOB_MSGS.pop(jid, None)
             if bar is not None:
                 bar = await _edit_progress(bar, f"✅ تم التحميل ({size / 1024 / 1024:.0f}MB) — يتجاوز حد 2GB.\nرابط التحميل: {settings.base_url}/download/{token}")
             else:
@@ -506,30 +507,20 @@ async def watch_and_deliver(chat_id: int, jid: str):
         last_up = -1
         while not send_task.done():
             pct = up_state["pct"]
-            if pct >= last_up + 10 and bar is not None:
+            if pct != last_up and bar is not None:
                 bar = await _edit_progress(bar, f"⬆️ جارٍ الرفع [{_progress_bar(pct)}] {pct}%")
                 last_up = pct
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
         try:
             await send_task
         except Exception as e:  # noqa: BLE001
             log.exception("send failed, falling back to link")
-            _JOB_MSGS.pop(jid, None)
             if bar is not None:
                 bar = await _edit_progress(bar, f"⚠️ تعذر الإرسال المباشر ({str(e)[:100]}).\nرابط التحميل: {settings.base_url}/download/{token}")
             else:
                 await bot.send_message(chat_id, f"⚠️ تعذر الإرسال المباشر ({str(e)[:100]}).\nرابط التحميل: {settings.base_url}/download/{token}")
             return
-        # 🧹 قرار المستخدم (2026-08): بعد وصول المقطع تُحذف كل رسائل الحالة — لا تبقى أي رسالة
-        msgs = _JOB_MSGS.pop(jid, None)
-        if msgs:
-            for mid in (msgs.get("ack_id"), msgs.get("received_id")):
-                if mid:
-                    try:
-                        await bot.delete_message(msgs["chat_id"], mid)
-                    except Exception:  # noqa: BLE001
-                        pass
-        # شريط التقدم يُحذف أيضًا — يبقى المقطع وحده فقط
+        # 🧹 قرار المستخدم (2026-08): بعد وصول المقطع يُحذف شريط الحالة — يبقى المقطع وحده فقط
         if bar is not None:
             try:
                 await bar.delete()
@@ -541,7 +532,6 @@ async def watch_and_deliver(chat_id: int, jid: str):
         clear_status(jid)
         return
     elif state == "failed":
-        _JOB_MSGS.pop(jid, None)
         reason = ""
         if err:
             low = err.lower()

@@ -685,13 +685,18 @@ async def _set_bot_commands(app: Application):
     """تسجيل أوامر البوت الظاهرة في قائمة الأوامر داخل تيليجرام."""
     commands = [
         {"command": "start", "description": "بدء المحادثة وعرض التعليمات"},
-        {"command": "audio", "description": "تحميل الصوت دائمًا بدون سؤال"},
-        {"command": "video", "description": "تحميل الفيديو دائمًا بدون سؤال"},
+        {"command": "audio", "description": "تحميل الصوت دائمًا"},
+        {"command": "video", "description": "تحميل الفيديو دائمًا"},
         {"command": "reset", "description": "العودة للاختيار عند كل رابط"},
-        {"command": "clearcookies", "description": "حذف الكوكيز المحفوظة"},
     ]
-    # استخدام API مباشر بدل BotCommand لتجنب is_ephemeral=true
-    await app.bot._post("setMyCommands", {"commands": commands})
+    # استخدام API مباشر مع scope و language لضمان الظهور
+    await app.bot._post("deleteMyCommands", {})
+    await app.bot._post("setMyCommands", {"commands": commands, "scope": {"type": "default"}})
+    await app.bot._post("setMyCommands", {
+        "commands": commands,
+        "scope": {"type": "default"},
+        "language_code": "ar",
+    })
     log.info("bot commands registered")
 
 def main():

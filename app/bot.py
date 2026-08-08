@@ -689,14 +689,11 @@ async def _set_bot_commands(app: Application):
         {"command": "video", "description": "تحميل الفيديو دائمًا"},
         {"command": "reset", "description": "العودة للاختيار عند كل رابط"},
     ]
-    # استخدام API مباشر مع scope و language لضمان الظهور
-    await app.bot._post("deleteMyCommands", {})
+    # حذف جميع الأوامر من كل النطاقات أولًا (يمنع تداخل الأوامر القديمة)
+    for scope in ({"type": "default"}, {"type": "all_private_chats"}, {"type": "all_group_chats"}):
+        await app.bot._post("deleteMyCommands", {"scope": scope})
+    # تعيين الأوامر في النطاق الافتراضي فقط
     await app.bot._post("setMyCommands", {"commands": commands, "scope": {"type": "default"}})
-    await app.bot._post("setMyCommands", {
-        "commands": commands,
-        "scope": {"type": "default"},
-        "language_code": "ar",
-    })
     log.info("bot commands registered")
 
 def main():

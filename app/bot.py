@@ -1,6 +1,6 @@
 import asyncio, secrets, logging, os, time, shutil
 from pathlib import Path
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 from .config import settings
 from .db import init_db, SessionLocal, Job, utcnow
@@ -684,13 +684,14 @@ async def handle_update_webhook(update: Update) -> None:
 async def _set_bot_commands(app: Application):
     """تسجيل أوامر البوت الظاهرة في قائمة الأوامر داخل تيليجرام."""
     commands = [
-        BotCommand("start", "بدء المحادثة وعرض التعليمات"),
-        BotCommand("audio", "تحميل الصوت دائمًا بدون سؤال"),
-        BotCommand("video", "تحميل الفيديو دائمًا بدون سؤال"),
-        BotCommand("reset", "العودة للاختيار عند كل رابط"),
-        BotCommand("clearcookies", "حذف الكوكيز المحفوظة"),
+        {"command": "start", "description": "بدء المحادثة وعرض التعليمات"},
+        {"command": "audio", "description": "تحميل الصوت دائمًا بدون سؤال"},
+        {"command": "video", "description": "تحميل الفيديو دائمًا بدون سؤال"},
+        {"command": "reset", "description": "العودة للاختيار عند كل رابط"},
+        {"command": "clearcookies", "description": "حذف الكوكيز المحفوظة"},
     ]
-    await app.bot.set_my_commands(commands)
+    # استخدام API مباشر بدل BotCommand لتجنب is_ephemeral=true
+    await app.bot._post("setMyCommands", {"commands": commands})
     log.info("bot commands registered")
 
 def main():

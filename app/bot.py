@@ -27,9 +27,11 @@ def _spawn(coro):
     return t
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_name = update.effective_user.full_name
     await update.message.reply_text(
-        "أهلاً بك اسم الزائر كاملاً 🤖\n\n"
-        "أرسل أي رابط يحتوي فيديو — من أي موقع في العالم: سوشيال ميديا، صفحات عادية، مشغّلات JS، روابط مباشرة… وسأحمّله لك فورًا.\n\n"
+        f"أهلاً بك {user_name} 🤖\n\n"
+        "أرسل أي رابط يحتوي فيديو — من أي موقع في العالم: سوشيال ميديا، صفحات عادية، "
+        "مشغّلات JS، روابط مباشرة… وسأحمّله لك فورًا.\n\n"
         "🎯 عند إرسال رابط يظهر لك اختيار: فيديو أو صوت، ثم جودة الفيديو.\n"
         "   🎵 /audio — صوت دائمًا (بدون سؤال)\n"
         "   🎬 /video — فيديو دائمًا (بدون سؤال)\n"

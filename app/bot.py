@@ -1,6 +1,6 @@
 import asyncio, secrets, logging, os, time, shutil
 from pathlib import Path
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 from .config import settings
 from .db import init_db, SessionLocal, Job, utcnow
@@ -656,6 +656,7 @@ def build_application() -> Application:
     # ملاحظة: filters.Document كلاس في PTB v21 ويكسر المعالج — استخدم filters.ATTACHMENT (نسخة جاهزة)
     app.add_handler(MessageHandler(filters.ATTACHMENT, receive_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive))
+    app.post_init = _set_bot_commands
     return app
 
 
@@ -679,6 +680,18 @@ async def handle_update_webhook(update: Update) -> None:
         await _webhook_app.initialize()
     await _webhook_app.process_update(update)
 
+
+async def _set_bot_commands(app: Application):
+    """تسجيل أوامر البوت الظاهرة في قائمة الأوامر داخل تيليجرام."""
+    commands = [
+        BotCommand("start", "بدء المحادثة وعرض التعليمات"),
+        BotCommand("audio", "تحميل الصوت دائمًا بدون سؤال"),
+        BotCommand("video", "تحميل الفيديو دائمًا بدون سؤال"),
+        BotCommand("reset", "العودة للاختيار عند كل رابط"),
+        BotCommand("clearcookies", "حذف الكوكيز المحفوظة"),
+    ]
+    await app.bot.set_my_commands(commands)
+    log.info("bot commands registered")
 
 def main():
     app = build_application()

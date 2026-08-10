@@ -23,15 +23,8 @@ def process_job(job_id):
         owner_key = job.owner_key or ""
         job.status = 'downloading'
         db.commit()
-    # 🚀 تخزين هجين: كل الملفات تبدأ في RAM أولاً (حتى 4GB)
-    # إذا الرام امتلأ ← HDD تلقائياً (except OSError أدناه)
-    outdir = settings.ram_store_path / job_id
-    try:
-        outdir.mkdir(exist_ok=True)
-    except OSError:
-        # RAM ممتلئ → HDD احتياطي
-        outdir = settings.storage_path / job_id
-        outdir.mkdir(exist_ok=True)
+    outdir = settings.storage_path / job_id
+    outdir.mkdir(exist_ok=True)
     write_status(job_id, "downloading", 0)
 
     # التقدم يُكتب في status.json فقط — لا مساس بـ SQLite عند كل نبضة

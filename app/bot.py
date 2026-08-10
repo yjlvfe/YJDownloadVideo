@@ -509,6 +509,7 @@ async def watch_and_deliver(chat_id: int, jid: str, status_msg=None):
 
         # انتظار انتهاء المعالجة: الحالة من القاعدة (الطابور/التحميل) + النسبة من status.json
         last_text = ""
+        prep_start = 0.0  # توقيت بدء التجهيز (للنسبة التقديرية)
         while True:
             with SessionLocal() as db:
                 j = db.get(Job, jid)
@@ -519,8 +520,23 @@ async def watch_and_deliver(chat_id: int, jid: str, status_msg=None):
             elif state in ("downloading", "preparing"):
                 st = read_status(jid) or {}
                 if st.get("stage") == "preparing":
-                    text = "🔧 جارٍ تجهيز المقطع..."
+                    # ⚙️ تجهيز = دمج ffmpeg — يُقدّر الوقت من حجم الملف وسرعة HDD (~40MB/s)
+                    import time
+                    now = time.monotonic()
+                    if prep_start == 0.0:
+                        prep_start = now
+                    elapsed = now - prep_start
+                    file_size = st.get("size", 0) or st.get("total", 0)
+                    if file_size > 0:
+                        est_sec = max(3, file_size / (40 * 1024 * 1024))  # تقدير: 40MB/s
+                        pct = min(95, int(elapsed / est_sec * 100))
+                        text = f"🔧 {_progress_bar(pct)} {pct}% — جارٍ تجهيز المقطع..."
+                    else:
+                        # حجم غير معروف — عداد زمني متحرك
+                        dots = "." * (1 + int(elapsed) % 3)
+                        text = f"🔧 جارٍ تجهيز المقطع{dots} ({int(elapsed)}s)"
                 else:
+                    prep_start = 0.0  # إعادة تعيين
                     pct = st.get("pct", 0)
                     total = st.get("total", 0)
                     size = st.get("size", 0)

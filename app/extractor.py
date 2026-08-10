@@ -631,7 +631,7 @@ class UniversalExtractor:
                 except Exception:  # noqa: BLE001
                     pass
             if info is None:
-                raise first_err
+                raise DownloadError(str(first_err)[:300]) from first_err
 
         # بعض المواقع (تيك توك) تعلن صوتًا ولا توفره فعليًا (HEVC بلا صوت).
         # إذا فشل الاستخراج أو خرج الملف بلا صوت — أعد المحاولة بصيغة فيديو+صوت منفصلين

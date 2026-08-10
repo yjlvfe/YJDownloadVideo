@@ -23,10 +23,9 @@ def process_job(job_id):
         owner_key = job.owner_key or ""
         job.status = 'downloading'
         db.commit()
-    # 🚀 تخزين هجين: الملفات الصغيرة (≤2GB = حد تيليجرام) → RAM (سريع جداً)
-    # الملفات الكبيرة (>2GB) → HDD (لأنها ما ترسل مباشرة، تعطى رابط تحميل)
-    use_ram = fmt == 'audio'  # الصوت دائماً صغير
-    outdir = (settings.ram_store_path if use_ram else settings.storage_path) / job_id
+    # 🚀 تخزين هجين: كل الملفات تبدأ في RAM أولاً (حتى 4GB)
+    # إذا الرام امتلأ ← HDD تلقائياً (except OSError أدناه)
+    outdir = settings.ram_store_path / job_id
     try:
         outdir.mkdir(exist_ok=True)
     except OSError:

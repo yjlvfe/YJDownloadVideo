@@ -279,15 +279,14 @@ class UniversalExtractor:
         outdir = Path(outdir)
         outdir.mkdir(parents=True, exist_ok=True)
 
-        # 🚀 يوتيوب: yt-dlp مباشرة (innertube معطّل مؤقتاً — broken لبعض الفيديوهات)
-        # (2026-08-10: innertube يفشل ب"No matching formats"، yt-dlp مثبت أنه يعمل)
-        if False and self._is_youtube(url):
+        # 🚀 يوتيوب: المسار الشامل أولًا (youtubei.js + bgutils PO tokens — يتجاوز خنق السيرفرات!)
+        if self._is_youtube(url):
             try:
                 from .youtube_innertube import innertube_available
                 if innertube_available():
                     return self._download_innertube(url, outdir, preferred)
             except DownloadError:
-                pass
+                pass  # انزل للمسار العادي — لا نمنع التحميل أبدًا
 
         # L1: yt-dlp كامل (الأقوى: دمج جودة عالية + صوت)
         try:

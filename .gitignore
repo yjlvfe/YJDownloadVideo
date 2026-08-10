@@ -10,3 +10,4 @@ downloads/
 *.sqlite3
 *.log
 .DS_Store
+data/cookies/*.txt

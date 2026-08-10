@@ -452,9 +452,9 @@ class UniversalExtractor:
             "http_headers": _ytdlp_headers(),
             "format_sort": ["res", "ext:mp4:m4a", "vcodec:h264"],
             "ffmpeg_location": ffmpeg_location(),
-            # 🚀 تسريع: 8 اتصالات متوازية للأجزاء (يكسر خنق يوتيوب للسيرفرات)
-            # (كان اتصالًا واحدًا — صار 8، بدون aria2c الخارجي لأنه يعلق بعض التحميلات)
-            "concurrent_fragment_downloads": 8,
+            # 🚀 تسريع: 16 اتصال متوازي للأجزاء (يكسر خنق يوتيوب لـ IP السيرفرات)
+            # يوتيوب يخنق كل اتصال مفرد ~3MB/s → 16 اتصال = حتى ~50MB/s
+            "concurrent_fragment_downloads": 16,
             # ⚠️ لا extractor_args لعميل android — يجبر يوتيوب على إرجاع تنسيق واحد فقط (360p)
             # ويوقف دمج العملاء الآخرين. العميل الافتراضي (web) يعيد كل الجودات حتى 4K/8K.
         }

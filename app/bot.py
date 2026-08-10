@@ -539,14 +539,14 @@ async def watch_and_deliver(chat_id: int, jid: str, status_msg=None):
 
         if state == "ready" and path and size is not None:
             if size > settings.telegram_send_limit_bytes:
-                # أكبر من 2GB — لا يمكن إرساله إطلاقًا
+                # أكبر من 2GB — لا يمكن إرساله عبر تيليجرام، نعطي رابط التحميل فقط
+                # 🧹 لا نحذف الملف هنا! cleanup يتكفل به بعد انتهاء expires_at (24h)
+                # (كان يُحذف فورًا = الرابط ميت 404 — إصلاح 2026-08-10)
                 size_str = _fmt_mb(size)
                 if bar is not None:
                     bar = await _edit_progress(bar, f"✅ تم التحميل ({size_str}) — يتجاوز حد 2GB.\nرابط التحميل: {settings.base_url}/download/{token}")
                 else:
                     await bot.send_message(chat_id, f"✅ تم التحميل ({size_str}) — يتجاوز حد 2GB.\nرابط التحميل: {settings.base_url}/download/{token}")
-                # 🗑️ حذف فوري حتى لو تجاوز 2GB — لا تكدس أبدًا
-                _delete_media(path)
                 clear_status(jid)
                 return
             # ← مرحلة الرفع: نفس الرسالة تتحول لشريط رفع
@@ -597,8 +597,8 @@ async def watch_and_deliver(chat_id: int, jid: str, status_msg=None):
                     bar = await _edit_progress(bar, f"⚠️ تعذر الإرسال المباشر ({str(e)[:100]}).\nرابط التحميل: {settings.base_url}/download/{token}")
                 else:
                     await bot.send_message(chat_id, f"⚠️ تعذر الإرسال المباشر ({str(e)[:100]}).\nرابط التحميل: {settings.base_url}/download/{token}")
-                # 🗑️ حتى لو فشل الرفع — نحذف الملف من التخزين (رابط التحميل المباشر يكفي)
-                _delete_media(path)
+                # 🧹 لا نحذف الملف هنا! المستخدم سيحمّله من الرابط — cleanup يتكفل
+                # بعد انتهاء expires_at. (كان يُحذف = رابط ميت 404 — إصلاح 2026-08-10)
                 clear_status(jid)
                 return
             # 🧹 قرار المستخدم (2026-08): بعد وصول المقطع يُحذف شريط الحالة — يبقى المقطع وحده فقط

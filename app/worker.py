@@ -109,8 +109,9 @@ def main():
     import redis
     r = redis.Redis.from_url(settings.redis_url)
     _recover_stale_jobs(r)
-    # ⚡ معالجة متوازية: حتى 20 مهمة بنفس الوقت — بلا طابور، الكل يتحمل دفعة واحدة
-    executor = ThreadPoolExecutor(max_workers=20)
+    # ⚡ معالجة متوازية: حتى 4 مهمات — (كان 20 على HDD/10 أنوية = تنافس ffmpeg وقرص يبطّئ الكل،
+    # خُفّض 2026-08-10 مع aria2c 16 اتصال لكل مهمة — 4×16 = 64 اتصال كافية لتشبع 1Gbps)
+    executor = ThreadPoolExecutor(max_workers=4)
     while True:
         try:
             item = r.blpop('yjdownload:jobs', timeout=5)

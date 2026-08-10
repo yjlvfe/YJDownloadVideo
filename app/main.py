@@ -32,6 +32,19 @@ app.state.limiter = limiter
 app.mount('/static', StaticFiles(directory='app/static'), name='static')
 
 
+@app.middleware("http")
+async def _gate_site(request: Request, call_next):
+    """🔒 قرار المستخدم (2026-08-10): الموقع لا يفتح إلا برابط التحميل من البوت.
+
+    أي زيارة للموقع بدون رابط /download/<token> صالح ← 403.
+    (كان الموقع مفتوحًا للعموم — صار روابط البوت فقط هي المدخل.)
+    """
+    path = request.url.path
+    if path.startswith("/download/"):
+        return await call_next(request)
+    return JSONResponse(status_code=403, content={"detail": "الموقع خاص — استخدم رابط التحميل من البوت."})
+
+
 @app.exception_handler(RateLimitExceeded)
 async def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
     return JSONResponse(status_code=429, content={"detail": "طلبات كثيرة — انتظر قليلاً ثم أعد المحاولة."})

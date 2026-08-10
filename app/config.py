@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     base_url: str = "http://localhost:8000"
     storage_dir: str = "./storage"
     file_ttl_seconds: int = 86400  # 24 ساعة — يطابق README و cleanup
-    max_file_size_bytes: int = 2 * 1024 * 1024 * 1024
+    max_file_size_bytes: int = 20 * 1024 * 1024 * 1024  # 20GB — الملفات فوق حد تيليجرام (2GB) تُعطى رابط تحميل بدل الإرسال
     max_duration_seconds: int = 0  # 0 = غير محدودة إطلاقًا (قرار المستخدم 2026-08)
     rate_limit_per_minute: int = 10
     telegram_bot_token: str = ""

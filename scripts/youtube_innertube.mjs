@@ -213,8 +213,11 @@ async function downloadVideo(info, target, height) {
     } catch {
       audioStream = await info.download({ type: 'audio', quality: 'best', format: 'any' });
     }
-    await writeWebStream(videoStream, videoSource, maxBytes);
-    await writeWebStream(audioStream, audioSource, maxBytes);
+    // ⚡ فيديو + صوت بالتوازي (كان تسلسليًا = ضعف الوقت — أُضيف 2026-08-10)
+    await Promise.all([
+      writeWebStream(videoStream, videoSource, maxBytes),
+      writeWebStream(audioStream, audioSource, maxBytes),
+    ]);
     runFfmpeg([
       '-y', '-i', videoSource, '-i', audioSource,
       '-map', '0:v:0', '-map', '1:a:0',

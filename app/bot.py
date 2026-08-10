@@ -517,12 +517,20 @@ async def watch_and_deliver(chat_id: int, jid: str, status_msg=None):
                 # في انتظار الـ worker (أجزاء من الثانية) — نعرض التحميل فورًا
                 text = f"⬇️ {_progress_bar(0)} 0% — جارٍ التحميل"
             elif state in ("downloading", "preparing"):
-                st = read_status(jid)
-                if st and st.get("stage") == "preparing":
+                st = read_status(jid) or {}
+                if st.get("stage") == "preparing":
                     text = "🔧 جارٍ تجهيز المقطع..."
                 else:
-                    pct = (st or {}).get("pct", 0)
-                    text = f"⬇️ {_progress_bar(pct)} {pct}% — جارٍ التحميل"
+                    pct = st.get("pct", 0)
+                    total = st.get("total", 0)
+                    size = st.get("size", 0)
+                    if pct > 0:
+                        text = f"⬇️ {_progress_bar(pct)} {pct}% — جارٍ التحميل"
+                    elif total == 0 and size > 0:
+                        # حجم كلي مجهول: أظهر MB المحمّلة بدل 0% المتجمد
+                        text = f"⬇️ {_fmt_mb(size)} محمّلة — جارٍ التحميل"
+                    else:
+                        text = f"⬇️ {_progress_bar(pct)} {pct}% — جارٍ التحميل"
             else:
                 break
             if text != last_text and bar is not None:

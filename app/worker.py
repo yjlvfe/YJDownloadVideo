@@ -33,8 +33,17 @@ def process_job(job_id):
         if d['status'] == 'downloading':
             total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
             done = d.get('downloaded_bytes') or 0
-            pct = int(done / total * 100) if total else 0
-            write_status(job_id, "downloading", pct, size=done)
+            # 🎯 نسبة تقدّم حقيقية: حتى لو الحجم الكلي مجهول، نستخدم النسبة الجزيئية من yt-dlp
+            # أو على الأقل نظهر الـ MB المحمّلة (لا 0% أبدًا — كان يبدو متجمداً)
+            pct_str = (d.get('_percent_str') or '').strip().rstrip('%')
+            try:
+                pct = int(float(pct_str))
+            except (ValueError, TypeError):
+                if total:
+                    pct = max(0, min(100, int(done / total * 100)))
+                else:
+                    pct = 0  # حجم مجهول — سنعرض الـ MB في البوت بدل النسبة
+            write_status(job_id, "downloading", pct, size=done, total=total)
         elif d['status'] in ('finished', 'post-processing'):
             write_status(job_id, "preparing", 100)
 

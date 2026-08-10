@@ -6,7 +6,7 @@ log = logging.getLogger("status")
 
 
 def write_status(job_id: str, stage: str, pct: int = 0, size: int = 0,
-                 message: str = "") -> None:
+                 total: int = 0, message: str = "") -> None:
     """يكتب حالة التقدم للمهمة في data/status/<job_id>.json — يقرأها البوت ليرسل تحديثات حية.
 
     كتابة ذرّية (tmp + os.replace): القارئ في حاوية أخرى لا يلتقط ملفًا نصف مكتوب.
@@ -18,6 +18,7 @@ def write_status(job_id: str, stage: str, pct: int = 0, size: int = 0,
             "stage": stage,        # downloading | preparing | uploading | done | failed
             "pct": int(pct),
             "size": int(size),
+            "total": int(total),   # إجمالي الحجم (0 = مجهول — البوت يعرض MB محمّلة)
             "message": message,
         }, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, p)

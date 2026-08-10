@@ -270,86 +270,14 @@ class UniversalExtractor:
 
     def download(self, url: str, outdir: Path, preferred: str = "best",
                  title_hint: str = "") -> dict:
-        """ينزّل الفيديو من أي رابط ويعيد {path,title,duration,thumbnail,ext}.
+        """ينزّل الفيديو — مسار واحد: yt-dlp مع كوكيز (نفس متصفح المستخدم بالضبط).
 
-        التدفق (2026-08): يوتيوب ← YouTube.js الشامل أولًا (كل الجودات بلا كوكيز)
-        ← yt-dlp نظيفة واحدة ← L4 للمرايا ← L2/L3 مرشح سليم ← android 360p.
-        لا تعدد عملاء ولا محاولات متكررة — كل طلب إضافي يرفع علم الروبوت.
+        البساطة = أمان: لا مسارات متعددة ولا أنماط طلبات مختلفة تثير شك يوتيوب.
+        yt-dlp يجرب 3 استراتيجيات: بدون كوكيز → مع كوكيز → android 360p.
         """
         outdir = Path(outdir)
         outdir.mkdir(parents=True, exist_ok=True)
-
-        # 🚀 يوتيوب: المسار الشامل أولًا (youtubei.js + bgutils PO tokens — يتجاوز خنق السيرفرات!)
-        if self._is_youtube(url):
-            try:
-                from .youtube_innertube import innertube_available
-                if innertube_available():
-                    return self._download_innertube(url, outdir, preferred)
-            except DownloadError:
-                pass  # انزل للمسار العادي — لا نمنع التحميل أبدًا
-
-        # L1: yt-dlp كامل (الأقوى: دمج جودة عالية + صوت)
-        try:
-            return self._download_ytdlp(url, outdir, preferred)
-        except DownloadError as de:
-            # يوتيوب محجوب من الخادم (فحص روبوت)؟ جرّب الخوادم البديلة قبل الاستسلام
-            if not (self._is_youtube(url) and not self.cookies_file):
-                raise
-            try:
-                return self._download_yt_fallback(url, outdir, preferred)
-            except DownloadError:
-                raise de
-        except Exception as e:  # noqa: BLE001
-            first_err = str(e)[:200]
-
-        # L2+L3: اكتشاف ثم تحميل أفضل مرشح سليم (لا نسلّم ملفًا ناقصًا أبدًا)
-        try:
-            d = self.discover(url)
-            cands = d.get("candidates") or []
-            if d.get("title") and cands and not cands[0].title:
-                cands[0].title = d["title"]
-            last_err = "لا مرشحين"
-            best_res = None
-            for cand in cands[:4]:
-                try:
-                    res = self._download_candidate(cand, outdir, referer=url)
-                    if best_res is None:
-                        best_res = res
-                    ok_audio = _has_audio(res["path"])
-                    ok_video = preferred == "audio" or _has_video(res["path"])
-                    if ok_audio and ok_video:
-                        return res
-                    last_err = "المقطع المحمّل ناقص (صوت/فيديو) — جربت بدائل"
-                except Exception as e:  # noqa: BLE001
-                    last_err = str(e)[:200]
-            if best_res:
-                ok_audio = _has_audio(best_res["path"])
-                ok_video = preferred == "audio" or _has_video(best_res["path"])
-                if ok_audio and ok_video:
-                    return best_res
-                raise DownloadError(f"فشل التحميل: {last_err or 'المقطع ناقص (صوت/فيديو)'}")
-            # L4: يوتيوب محجوب (فحص روبوت) — خوادم Invidious/Piped العامة بلا كوكيز
-            if not self.cookies_file and self._is_youtube(url):
-                try:
-                    return self._download_yt_fallback(url, outdir, preferred)
-                except DownloadError:
-                    pass
-            hint = ""
-            if (("youtube" in url.lower() or "youtu.be" in url.lower())
-                    and not self.cookies_file):
-                hint = (" 💡 يوتيوب يحجب خوادم الاستضافة (فحص روبوت). "
-                        "الحل المضمون: أرسل ملف كوكيز يوتيوب للبوت (Get cookies.txt) مرة واحدة.")
-            raise DownloadError(f"فشل التحميل: {last_err}{hint}")
-        except DownloadError as de:
-            # 🎯 الاكتشاف نفسه فشل (لا مرشحين) — L4 لا تزال آخر أمل ليوتيوب المحجوب
-            if not self.cookies_file and self._is_youtube(url):
-                try:
-                    return self._download_yt_fallback(url, outdir, preferred)
-                except DownloadError:
-                    pass
-            raise de
-        except Exception as e:  # noqa: BLE001
-            raise DownloadError(f"فشل التحميل: {first_err} / {str(e)[:200]}") from e
+        return self._download_ytdlp(url, outdir, preferred)
 
     def inspect(self, url: str) -> dict:
         """معاينة سريعة لأي رابط: yt-dlp أولاً (قائمة جودات حقيقية)، ثم المسح/المتصفح.

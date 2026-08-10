@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     base_url: str = "http://localhost:8000"
     storage_dir: str = "./storage"
+    ram_store_dir: str = "./ramstore"  # tmpfs RAM — للملفات ≤2GB (سريع جداً)
+    ram_threshold_bytes: int = 2 * 1024 * 1024 * 1024  # 2GB = حد تيليجرام — فوقها HDD
     file_ttl_seconds: int = 86400  # 24 ساعة — يطابق README و cleanup
     max_file_size_bytes: int = 20 * 1024 * 1024 * 1024  # 20GB — الملفات فوق حد تيليجرام (2GB) تُعطى رابط تحميل بدل الإرسال
     max_duration_seconds: int = 0  # 0 = غير محدودة إطلاقًا (قرار المستخدم 2026-08)
@@ -39,6 +41,10 @@ class Settings(BaseSettings):
     @property
     def storage_path(self) -> Path:
         p = Path(self.storage_dir); p.mkdir(parents=True, exist_ok=True); return p
+
+    @property
+    def ram_store_path(self) -> Path:
+        p = Path(self.ram_store_dir); p.mkdir(parents=True, exist_ok=True); return p
 
     @property
     def db_path(self) -> Path:

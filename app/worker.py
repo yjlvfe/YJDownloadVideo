@@ -23,8 +23,16 @@ def process_job(job_id):
         owner_key = job.owner_key or ""
         job.status = 'downloading'
         db.commit()
-    outdir = settings.storage_path / job_id
-    outdir.mkdir(exist_ok=True)
+    # 🚀 تخزين هجين: الملفات الصغيرة (≤2GB = حد تيليجرام) → RAM (سريع جداً)
+    # الملفات الكبيرة (>2GB) → HDD (لأنها ما ترسل مباشرة، تعطى رابط تحميل)
+    use_ram = fmt == 'audio'  # الصوت دائماً صغير
+    outdir = (settings.ram_store_path if use_ram else settings.storage_path) / job_id
+    try:
+        outdir.mkdir(exist_ok=True)
+    except OSError:
+        # RAM ممتلئ → HDD احتياطي
+        outdir = settings.storage_path / job_id
+        outdir.mkdir(exist_ok=True)
     write_status(job_id, "downloading", 0)
 
     # التقدم يُكتب في status.json فقط — لا مساس بـ SQLite عند كل نبضة

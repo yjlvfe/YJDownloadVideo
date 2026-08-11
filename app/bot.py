@@ -163,7 +163,7 @@ async def video_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 
 PENDING: dict[str, dict] = {}      # nonce -> {user_id, chat_id, url, created, offered?}
-_PICK_TTL = 180                     # 3 دقائق لاتخاذ القرار
+_PICK_TTL = 300                     # 5 دقائق لاتخاذ القرار
 
 _QUALITY_LABELS = {"best": "⭐ الأفضل", "audio": "🎵 صوت"}
 
@@ -284,9 +284,13 @@ async def on_pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if pending["user_id"] != query.from_user.id:
         await query.answer("❌ هذا الاختيار لصاحب الطلب فقط.", show_alert=True)
         return
-    if time.time() - pending["created"] > _PICK_TTL:
+    if time.time() - pending['created'] > _PICK_TTL:
         PENDING.pop(nonce, None)
-        await query.answer("⏳ انتهى وقت الاختيار — أرسل الرابط مجددًا.", show_alert=True)
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        await query.answer('⏳ انتهى وقت الاختيار — أرسل الرابط مجددًا.', show_alert=True)
         return
 
     if kind == "x":

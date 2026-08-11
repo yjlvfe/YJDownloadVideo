@@ -249,19 +249,55 @@ def _pick_kb(buttons: list[list[tuple[str, str]]]) -> InlineKeyboardMarkup:
     ])
 
 
-async def _ask_choice(chat_id: int, user_id: int, url: str, context) -> None:
-    """يعرض أزرار فيديو/صوت فقط — بلا أي رسالة نصية (قرار المستخدم 2026-08)."""
+async def _ask_qualities(chat_id: int, user_id: int, url: str, context) -> None:
+    """يعرض قائمة الجودات الكاملة مباشرة (بدون خطوة فيديو/صوت)."""
     _cleanup_pending()
     nonce = secrets.token_urlsafe(8)
     PENDING[nonce] = {"user_id": user_id, "chat_id": chat_id,
                       "url": url, "created": time.time()}
-    kb = _pick_kb([
-        [("🎬 فيديو", f"pick:v:{nonce}"), ("🎵 صوت", f"pick:a:{nonce}")],
-    ])
+    
+    # فحص الجودات المتاحة
+    quals = []
     try:
-        # رسالة بأزرار فقط: نص صغير (فارغ ترفضه تيليجرام)
-        await context.bot.send_message(chat_id, "🎯", reply_markup=kb)
-    except Exception:  # noqa: BLE001
+        from .extractor import UniversalExtractor
+        ex = UniversalExtractor(request_timeout=30)
+        try:
+            d = await asyncio.wait_for(
+                asyncio.to_thread(ex.inspect, url), timeout=45)
+        finally:
+            ex.cleanup()
+        quals = _offered_qualities(d.get("formats") or [])
+    except Exception:
+        pass
+    
+    # بناء الأزرار
+    rows = []
+    # الأفضل دائماً أول زر
+    rows.append([("⭐ الأفضل", f"pick:q:{nonce}:best")])
+    # الجودات حسب الارتفاع
+    row = []
+    for q in quals:
+        label = f"{q['height']}p"
+        if q.get('size'):
+            label += f" · {_fmt_mb(q['size'])}"
+        row.append((label, f"pick:q:{nonce}:{q['height']}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    # الصوت دائماً في الأخير
+    audio_size = None
+    if quals:
+        audio_size = quals[-1].get("size")
+    audio_label = "🎵 صوت" + (f" · {_fmt_mb(audio_size)}" if audio_size else "")
+    rows.append([(audio_label, f"pick:a:{nonce}"), ("❌ إلغاء", f"pick:x:{nonce}")])
+    
+    kb = _pick_kb(rows)
+    note = "" if quals else "\n⚠️ تعذر تحديد الجودات — سيُحمَّل الأفضل المتوفر."
+    try:
+        await context.bot.send_message(chat_id, "🎬 اختر الجودة:" + note, reply_markup=kb)
+    except Exception:
         pass
 
 
@@ -677,14 +713,10 @@ def build_application() -> Application:
     app = builder.build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("clearcookies", clear_cookies))
-    app.add_handler(CommandHandler("audio", audio_mode))
-    app.add_handler(CommandHandler("video", video_mode))
-    app.add_handler(CommandHandler("reset", reset_mode))
     app.add_handler(CallbackQueryHandler(on_pick_callback, pattern=r"^pick:"))
     # ملاحظة: filters.Document كلاس في PTB v21 ويكسر المعالج — استخدم filters.ATTACHMENT (نسخة جاهزة)
     app.add_handler(MessageHandler(filters.ATTACHMENT, receive_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive))
-    app.post_init = _set_bot_commands
     return app
 
 
@@ -709,20 +741,7 @@ async def handle_update_webhook(update: Update) -> None:
     await _webhook_app.process_update(update)
 
 
-async def _set_bot_commands(app: Application):
-    """تسجيل أوامر البوت الظاهرة في قائمة الأوامر داخل تيليجرام."""
-    commands = [
-        {"command": "start", "description": "بدء المحادثة وعرض التعليمات"},
-        {"command": "audio", "description": "تحميل الصوت دائمًا"},
-        {"command": "video", "description": "تحميل الفيديو دائمًا"},
-        {"command": "reset", "description": "العودة للاختيار عند كل رابط"},
-    ]
-    # حذف جميع الأوامر من كل النطاقات أولًا (يمنع تداخل الأوامر القديمة)
-    for scope in ({"type": "default"}, {"type": "all_private_chats"}, {"type": "all_group_chats"}):
-        await app.bot._post("deleteMyCommands", {"scope": scope})
-    # تعيين الأوامر في النطاق الافتراضي فقط
-    await app.bot._post("setMyCommands", {"commands": commands, "scope": {"type": "default"}})
-    log.info("bot commands registered")
+
 
 def main():
     app = build_application()

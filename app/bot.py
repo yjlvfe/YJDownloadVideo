@@ -433,13 +433,8 @@ async def receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     mode = _pref_mode(update.effective_user.id)
-    if mode == "ask":
-        # الوضع الطبيعي: زرين فقط (فيديو/صوت) — بلا أي رسالة نصية
-        await _ask_choice(update.effective_chat.id, update.effective_user.id, url, context)
-    else:
-        # وضع ثابت (/audio أو /video): بدون سؤال
-        fmt = "audio" if mode == "audio" else "best"
-        await _create_job(update.effective_user.id, update.effective_chat.id, url, fmt, context)
+    # مباشرة: عرض الجودات
+    await _ask_qualities(update.effective_chat.id, update.effective_user.id, url, context)
 
 def _make_request(progress_cb=None):
     """مهلات طويلة + تتبع تقدم الرفع (PTB v21 حذف معامل progress من دوال الإرسال)."""

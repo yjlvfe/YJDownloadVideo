@@ -309,7 +309,7 @@ def _quality_label(fmt: str) -> str:
     return fmt
 
 
-def _offered_qualities(formats: list[dict], limit: int = 6) -> list[dict]:
+def _offered_qualities(formats: list[dict], limit: int = 12) -> list[dict]:
     """دقات فريدة تنازليًا مع أحجامها من قائمة الجودات الحقيقية — أساس أزرار البوت."""
     seen: dict[int, dict] = {}
     for f in formats or []:

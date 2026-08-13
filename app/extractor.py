@@ -272,8 +272,7 @@ class UniversalExtractor:
                  title_hint: str = "") -> dict:
         """ينزّل الفيديو — مسار واحد: yt-dlp مع كوكيز (نفس متصفح المستخدم بالضبط).
 
-        البساطة = أمان: لا مسارات متعددة ولا أنماط طلبات مختلفة تثير شك يوتيوب.
-        yt-dlp يجرب 3 استراتيجيات: بدون كوكيز → مع كوكيز → android 360p.
+        البساطة = أمان: مسار واحد فقط — yt-dlp مع بروكسي/كوكيز، بلا أنماط طلبات متعددة.
         """
         outdir = Path(outdir)
         outdir.mkdir(parents=True, exist_ok=True)
@@ -331,13 +330,10 @@ class UniversalExtractor:
         except Exception as e:  # noqa: BLE001
             import logging
             logging.getLogger("extractor").warning("inspect yt-dlp failed for %s: %s", url, str(e)[:200])
-        d = self.discover(url, skip_ytdlp=True)
-        # 🩺 سبب محتمل لفشل الفحص
-        hint = "قد يكون IP الخادم محجوبًا من الموقع — أرسل كوكيز المتصفح للبوت (Get cookies.txt)"
-        return {"source": d.get("source"), "title": d.get("title"),
-                "thumbnail": d.get("thumbnail"), "duration": d.get("duration"),
+        # 🚀 بساطة: لا فحص HTML/متصفح إضافي (نمط طلبات يفضحنا) — نرجع فارغًا
+        return {"source": "ytdlp", "title": "", "thumbnail": "", "duration": None,
                 "formats": [], "audio_size": None,
-                "_inspect_error": hint}
+                "_inspect_error": "تعذر تحديد الجودات — سيُحمَّل الأفضل المتوفر."}
 
     # ------------------------------------------------------------------
     # L1 — yt-dlp
@@ -415,36 +411,9 @@ class UniversalExtractor:
         if self.cookies_file:
             opts["cookiefile"] = self.cookies_file
         
-        info = None
-        # المحاولة ١: بدون كوكيز (للمحتوى العام — يعرض كل الجودات من IP نظيف)
-        try:
-            opts_no_cookies = dict(opts)
-            opts_no_cookies.pop("cookiefile", None)
-            with YoutubeDL(opts_no_cookies) as ydl:
-                info = ydl.extract_info(clean_url, download=False)
-        except Exception:  # noqa: BLE001
-            pass
-        
-        # المحاولة ٢: مع كوكيز (للمحتوى المقيد — Geographic/Age-restricted)
-        if self._is_youtube(url) and self.cookies_file and (
-                info is None or not _has_real_formats(info)):
-            try:
-                with YoutubeDL(opts) as ydl:  # opts فيها cookiefile
-                    info = ydl.extract_info(clean_url, download=False)
-            except Exception:  # noqa: BLE001
-                pass
-        
-        # 🛑 IP محجوب (SABR): web client يرجع storyboards فقط أو يرمي استثناء.
-        # نجرب android كخطة طوارئ — 360p على الأقل.
-        if self._is_youtube(url) and (info is None or not _has_real_formats(info)):
-            try:
-                opts_a = dict(opts)
-                opts_a.pop("cookiefile", None)  # android لا يدعم الكوكيز
-                opts_a["extractor_args"] = {"youtube": {"player_client": ["android"]}}
-                with YoutubeDL(opts_a) as ydl:
-                    info = ydl.extract_info(clean_url, download=False)
-            except Exception:  # noqa: BLE001
-                pass
+        # 🚀 محاولة واحدة فقط (بساطة = أمان — لا أنماط طلبات متعددة تثير شك يوتيوب)
+        with YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(clean_url, download=False)
         
         if not info:
             raise DownloadError("yt-dlp لم يُرجع بيانات")
@@ -520,90 +489,14 @@ class UniversalExtractor:
 
     def _download_ytdlp(self, url: str, outdir: Path, preferred: str) -> dict:
         from yt_dlp import YoutubeDL
-        info = None
-        path = None
-        # المحاولة ١: بدون كوكيز (للمحتوى العام — جودة كاملة من IP نظيف)
-        try:
-            opts = self._base_ytdlp_opts(outdir, preferred)
-            opts.pop("cookiefile", None)
-            with YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-            files = [p for p in outdir.iterdir() if p.is_file()]
-            if files:
-                path = max(files, key=lambda p: p.stat().st_mtime)
-        except Exception as first_err:  # noqa: BLE001
-            # المحاولة ٢: مع كوكيز (للمحتوى المقيد)
-            if info is None and self.cookies_file and self._is_youtube(url):
-                try:
-                    opts = self._base_ytdlp_opts(outdir, preferred)
-                    with YoutubeDL(opts) as ydl:
-                        info = ydl.extract_info(url, download=True)
-                    files = [p for p in outdir.iterdir() if p.is_file()]
-                    if files:
-                        path = max(files, key=lambda p: p.stat().st_mtime)
-                except Exception:  # noqa: BLE001
-                    pass
-            # المحاولة ٣: android (360p مضمون من أي IP)
-            if info is None and self._is_youtube(url):
-                try:
-                    opts_a = self._base_ytdlp_opts(outdir, preferred)
-                    opts_a.pop("cookiefile", None)
-                    opts_a["extractor_args"] = {"youtube": {"player_client": ["android"]}}
-                    opts_a["outtmpl"] = str(outdir / "%(title).120s_alt.%(ext)s")
-                    with YoutubeDL(opts_a) as ydl:
-                        info = ydl.extract_info(url, download=True)
-                    alt_files = [p for p in outdir.glob("*_alt.*") if p.is_file()]
-                    if alt_files:
-                        cand = max(alt_files, key=lambda p: p.stat().st_mtime)
-                        if _has_audio(cand) and (preferred == "audio" or _has_video(cand)):
-                            final = cand.with_name(cand.name.replace("_alt", ""))
-                            cand.rename(final)
-                            path = final
-                except Exception:  # noqa: BLE001
-                    pass
-            if info is None:
-                raise DownloadError(str(first_err)[:300]) from first_err
-
-        # بعض المواقع (تيك توك) تعلن صوتًا ولا توفره فعليًا (HEVC بلا صوت).
-        # إذا فشل الاستخراج أو خرج الملف بلا صوت — أعد المحاولة بصيغة فيديو+صوت منفصلين
-        # (دمج h264 يضمن صوتًا حقيقيًا) مع احترام ارتفاع الجودة المطلوب.
-        if info is None or path is None or not _has_audio(path):
-            opts2 = self._base_ytdlp_opts(outdir, preferred)
-            # 🎯 صيغة الإعادة: نفضل دمج h264 (صوت مضمون) مع احترام الدقة المطلوبة
-            # bestvideo (بدون *) = فيديو فقط، يُدمج مع bestaudio — يتجنب كذبة HEVC
-            if preferred.isdigit():
-                h = preferred
-                opts2["format"] = (f"bestvideo[height<={h}][ext=mp4][vcodec^=h264]+bestaudio/"
-                                   f"bestvideo[height<={h}][ext=mp4]+bestaudio/"
-                                   f"best[height<={h}][ext=mp4][vcodec^=h264]/best[height<={h}]")
-            else:
-                opts2["format"] = ("bestvideo[ext=mp4][vcodec^=h264]+bestaudio/"
-                                   "bestvideo[ext=mp4]+bestaudio/"
-                                   "best[ext=mp4][vcodec^=h264]/best")
-            # اسم مؤقت مختلف — لا نكتب فوق الملف الأول
-            opts2["outtmpl"] = str(outdir / "%(title).120s_retry.%(ext)s")
-            with YoutubeDL(opts2) as ydl:
-                info2 = ydl.extract_info(url, download=True)
-            info = info or info2
-            retry_files = [p for p in outdir.glob("*_retry.*") if p.is_file()]
-            if retry_files:
-                cand = max(retry_files, key=lambda p: p.stat().st_mtime)
-                if _has_audio(cand):
-                    try:
-                        if path:
-                            path.unlink(missing_ok=True)
-                    except Exception:  # noqa: BLE001
-                        pass
-                    final = cand.with_name(cand.name.replace("_retry", ""))
-                    cand.rename(final)
-                    path = final
-                else:
-                    try:
-                        cand.unlink(missing_ok=True)
-                    except Exception:  # noqa: BLE001
-                        pass
-            if info is None:
-                raise DownloadError("لم يُنشأ ملف")
+        # 🚀 محاولة واحدة فقط (بساطة = أمان — لا أنماط طلبات متعددة تثير شك يوتيوب)
+        opts = self._base_ytdlp_opts(outdir, preferred)
+        with YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+        files = [p for p in outdir.iterdir() if p.is_file()]
+        if not files:
+            raise DownloadError("لم يُنشأ ملف")
+        path = max(files, key=lambda p: p.stat().st_mtime)
 
         if path is None or not path.is_file():
             raise DownloadError("لم يُنشأ ملف")

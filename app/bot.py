@@ -32,7 +32,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"أهلاً بك {user_name} 🤖\n\n"
         "أرسل أي رابط فيديو — من أي موقع — وسأحمّله لك فورًا.\n\n"
         "🎯 عند إرسال الرابط تظهر كل الجودات مباشرة (الصوت في الأخير).\n"
-        "🔄 /ip — تبديل عنوان التحميل يدويًا (لو يوتيوب حظر الـ IP الحالي).\n\n"
+        "🔄 /ip — تبديل عنوان التحميل يدويًا (لو يوتيوب حظر الـ IP).\n"
+        "🧹 /clear — حذف كل الكوكيز بالكامل (لو الحظر من الجلسة).\n\n"
         "الاستثناء الوحيد: البث المشفّر بالكامل (DRM) لا يمكن فكّه."
     )
 
@@ -247,6 +248,39 @@ async def clear_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🧹 تم حذف الكوكيز المحفوظة.")
     else:
         await update.message.reply_text("لا توجد كوكيز محفوظة.")
+
+
+async def clear_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """حذف كل بيانات الكوكيز بالكامل — كل الملفات في مجلد الكوكيز."""
+    import glob
+    deleted = []
+    try:
+        for f in glob.glob(str(settings.cookies_path / "*.txt")):
+            try:
+                Path(f).unlink()
+                deleted.append(Path(f).name)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # تنظيف أي ملفات كوكيز أخرى (بدون امتداد txt)
+    try:
+        for f in settings.cookies_path.iterdir():
+            if f.is_file() and f.name not in deleted:
+                try:
+                    f.unlink()
+                    deleted.append(f.name)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    if deleted:
+        await update.message.reply_text(
+            "🧹 تم حذف كل الكوكيز بالكامل ✅\n\n" +
+            "ملفات حُذفت:\n" + "\n".join(f"• {n}" for n in deleted) +
+            "\n\nالآن البوت نظيف — يعمل بدون أي جلستي تسجيل دخول.")
+    else:
+        await update.message.reply_text("لا توجد كوكيز محفوظة — البوت نظيف أصلاً.")
 
 async def audio_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _set_pref(update.effective_user.id, "audio")
@@ -805,7 +839,7 @@ def build_application() -> Application:
         log.info("using local Bot API server: %s", base)
     app = builder.build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("clearcookies", clear_cookies))
+    app.add_handler(CommandHandler("clear", clear_all))
     app.add_handler(CommandHandler("ip", ip_command))
     app.add_handler(CallbackQueryHandler(on_ip_callback, pattern=r"^ip:"))
     app.add_handler(CallbackQueryHandler(on_pick_callback, pattern=r"^pick:"))
@@ -844,12 +878,13 @@ async def _set_bot_commands(app: Application):
     commands = [
         {"command": "start", "description": "بدء المحادثة"},
         {"command": "ip", "description": "عرض وتغيير عنوان التحميل (IP)"},
+        {"command": "clear", "description": "حذف كل الكوكيز بالكامل"},
     ]
     try:
         for scope in ({"type": "default"}, {"type": "all_private_chats"}, {"type": "all_group_chats"}):
             await app.bot._post("deleteMyCommands", {"scope": scope})
         await app.bot._post("setMyCommands", {"commands": commands, "scope": {"type": "default"}})
-        log.info("bot commands: start, ip")
+        log.info("bot commands: start, ip, clear")
     except Exception:
         log.exception("set_my_commands failed")
 

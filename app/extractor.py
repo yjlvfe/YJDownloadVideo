@@ -387,6 +387,8 @@ class UniversalExtractor:
         }
         if self.cookies_file:
             opts["cookiefile"] = self.cookies_file
+        if getattr(settings, "ytdlp_proxy", ""):
+            opts["proxy"] = settings.ytdlp_proxy
         if self.max_filesize:
             opts["max_filesize"] = self.max_filesize
         if self.progress_hook:
@@ -408,6 +410,8 @@ class UniversalExtractor:
             "no_warnings": True, "socket_timeout": 30,
             "http_headers": _ytdlp_headers(),
         }
+        if getattr(settings, "ytdlp_proxy", ""):
+            opts["proxy"] = settings.ytdlp_proxy
         if self.cookies_file:
             opts["cookiefile"] = self.cookies_file
         

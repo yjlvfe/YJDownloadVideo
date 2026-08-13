@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     max_active_jobs_per_ip: int = 50
     max_active_jobs_per_telegram_user: int = 50
     ytdlp_bin: str = "yt-dlp"
+    ytdlp_proxy: str = ""  # بروكسي SOCKS5/HTTP لـ yt-dlp (يتجاوز حظر IP يوتيوب) — e.g. socks5://172.17.0.1:1080
     ffmpeg_bin: str = "ffmpeg"
     vercel_mode: bool = False  # يُفعَّل تلقائيًا على Vercel (VERCEL=1)
     browser_bin: str = "chromium"

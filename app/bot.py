@@ -30,14 +30,56 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = update.effective_user.full_name
     await update.message.reply_text(
         f"أهلاً بك {user_name} 🤖\n\n"
-        "أرسل أي رابط يحتوي فيديو — من أي موقع في العالم: سوشيال ميديا، صفحات عادية، "
-        "مشغّلات JS، روابط مباشرة… وسأحمّله لك فورًا.\n\n"
-        "🎯 عند إرسال رابط يظهر لك اختيار: فيديو أو صوت، ثم جودة الفيديو.\n"
-        "   🎵 /audio — صوت دائمًا (بدون سؤال)\n"
-        "   🎬 /video — فيديو دائمًا (بدون سؤال)\n"
-        "   🔄 /reset — العودة للاختيار عند كل رابط\n\n"
+        "أرسل أي رابط فيديو — من أي موقع — وسأحمّله لك فورًا.\n\n"
+        "🎯 عند إرسال الرابط تظهر كل الجودات مباشرة (الصوت في الأخير).\n"
+        "🔄 /ip — تبديل عنوان التحميل يدويًا (لو يوتيوب حظر الـ IP الحالي).\n\n"
         "الاستثناء الوحيد: البث المشفّر بالكامل (DRM) لا يمكن فكّه."
     )
+
+
+async def ip_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """تبديل IP التحميل (VPN) يدويًا — يكتب علم للمراقب على الهوست."""
+    import os
+    ctl = "/app/vpn-ctl"
+    cur = os.path.join(ctl, "current_ip.txt")
+    old_ip = "غير معروف"
+    if os.path.exists(cur):
+        try:
+            old_ip = open(cur).read().strip()
+        except Exception:
+            pass
+    # طلب التبديل
+    try:
+        open(os.path.join(ctl, "rotate.now"), "w").write("1")
+    except Exception as e:
+        await update.message.reply_text(f"❌ تعذر طلب التبديل: {e}")
+        return
+    await update.message.reply_text(
+        f"🔄 جاري تبديل الـ IP...\n\nالـ IP الحالي: {old_ip}\n\n(يستغرق ثوانٍ)")
+    # انتظر النتيجة
+    import asyncio
+    for _ in range(18):  # حتى 90 ثانية
+        await asyncio.sleep(5)
+        if os.path.exists(cur):
+            try:
+                new_ip = open(cur).read().strip()
+            except Exception:
+                continue
+            if new_ip != old_ip:
+                await update.message.reply_text(f"✅ الـ IP الجديد: {new_ip}")
+                return
+        if not os.path.exists(os.path.join(ctl, "rotate.now")):
+            # اكتمل التبديل — اقرأ النتيجة النهائية
+            if os.path.exists(cur):
+                try:
+                    new_ip = open(cur).read().strip()
+                except Exception:
+                    new_ip = "غير معروف"
+                await update.message.reply_text(f"✅ الـ IP الحالي: {new_ip}")
+            else:
+                await update.message.reply_text("✅ تم التبديل")
+            return
+    await update.message.reply_text("⚠️ انتهت المهلة — تحقق من الـ IP لاحقًا.")
 
 
 # تفضيلات المستخدم: "ask" (افتراضي — اختيار عند كل رابط) | "audio" | "video"
@@ -708,6 +750,7 @@ def build_application() -> Application:
     app = builder.build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("clearcookies", clear_cookies))
+    app.add_handler(CommandHandler("ip", ip_command))
     app.add_handler(CallbackQueryHandler(on_pick_callback, pattern=r"^pick:"))
     # ملاحظة: filters.Document كلاس في PTB v21 ويكسر المعالج — استخدم filters.ATTACHMENT (نسخة جاهزة)
     app.add_handler(MessageHandler(filters.ATTACHMENT, receive_document))

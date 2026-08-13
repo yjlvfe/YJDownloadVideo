@@ -40,6 +40,7 @@ services:
       - ./data:/app/data
       - ./storage:/app/storage
       - /mnt/ramstore:/app/ramstore
+      - /opt/vpn-ctl:/app/vpn-ctl
     depends_on:
       - redis
   cleanup:

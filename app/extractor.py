@@ -135,7 +135,7 @@ class UniversalExtractor:
                 formats.append(entry)
             return {"source": "ytdlp", "title": info.get("title"),
                     "thumbnail": info.get("thumbnail"), "duration": info.get("duration"),
-                    "formats": formats[:12], "audio_size": audio_size}
+                    "formats": formats, "audio_size": audio_size}
         except Exception as e:  # noqa: BLE001
             import logging
             logging.getLogger("extractor").warning("inspect yt-dlp failed for %s: %s", url, str(e)[:200])

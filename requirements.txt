@@ -10,7 +10,5 @@ redis==5.2.1
 slowapi==0.1.9
 python-dotenv==1.0.1
 itsdangerous==2.2.0
-pytest==8.3.4
 websockets>=13.0
-curl_cffi>=0.7
 imageio-ffmpeg>=0.5

@@ -403,6 +403,10 @@ async def _ask_qualities(chat_id: int, user_id: int, url: str, context) -> None:
     except Exception:
         pass
     
+    # 📌 ضبط الجودات المعروضة (يُتحقق منها عند الضغط — يمنع جودات غير معروضة)
+    heights = {str(q["height"]) for q in quals}
+    PENDING[nonce]["offered"] = {"best", "audio", *heights}
+    
     # بناء الأزرار
     rows = []
     # الأفضل دائماً أول زر

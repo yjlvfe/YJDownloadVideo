@@ -31,9 +31,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"أهلاً بك {user_name} 🤖\n\n"
         "أرسل أي رابط فيديو — من أي موقع — وسأحمّله لك فورًا.\n\n"
-        "🎯 عند إرسال الرابط تظهر كل الجودات مباشرة (الصوت في الأخير).\n"
-        "🔄 /ip — تبديل عنوان التحميل يدويًا (لو يوتيوب حظر الـ IP).\n"
-        "🧹 /clear — حذف كل الكوكيز بالكامل (لو الحظر من الجلسة).\n\n"
+        "🎯 عند إرسال الرابط تظهر كل الجودات مباشرة (الصوت في الأخير).\n\n"
+        "⚙️ الأوامر:\n"
+        "🔄 /ip — تغيير عنوان التحميل (لو يوتيوب حظر الـ IP)\n"
+        "🧹 /clear — حذف كل الكوكيز بالكامل\n\n"
         "الاستثناء الوحيد: البث المشفّر بالكامل (DRM) لا يمكن فكّه."
     )
 
@@ -810,7 +811,9 @@ async def watch_and_deliver(chat_id: int, jid: str, status_msg=None):
                 if any(k in low for k in ("drm", "widevine", "playready", "fairplay", "license", "encrypt")):
                     reason = "\n🔒 السبب: هذا المحتوى مشفّر بـ DRM — لا يمكن تحميله (نظام حماية قانوني)."
                 elif any(k in low for k in ("login", "auth", "cookie", "403", "forbidden", "membership", "subscription", "premium", "sign in")):
-                    reason = f"\n🔐 السبب: الموقع يطلب تسجيل دخول/اشتراك. الحل: حمّل بملف كوكيز جلستك (أرسل الملف مع الرابط).\nالتفاصيل: {err[:200]}"
+                    reason = ("\n🔐 يوتيوب حظر عنوان التحميل الحالي.\n"
+                              "🔄 الحل: أرسل /ip واضغط زر «تغيير» لجلب عنوان جديد، ثم أعد إرسال الرابط.\n"
+                              "👨‍💻 لو ما صلح بعد التغيير — تواصل مع المبرمج @YJLVFE")
                 elif any(k in low for k in ("live", "بث")):
                     reason = "\n📡 السبب: هذا بث مباشر وليس مقطعًا مسجلًا."
                 else:

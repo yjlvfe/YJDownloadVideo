@@ -1,53 +1,40 @@
-#!/usr/bin/env bash
-# ============================================================
-# نشر YJDownloadVideo على أي سيرفر Ubuntu/Debian جديد — بأمر واحد
-#   curl -sL <رابط الملف> | bash   أو   bash deploy.sh
-# ============================================================
+#!/bin/bash
+# 📦 نشر موحّد: ينسخ كل ملفات الكود المعدَّلة لكل الحاويات المعنية + إعادة تشغيل
+# الاستخدام: bash deploy.sh
+# ⚠️ يضمن أن كل الحاويات (bot + worker + web) على نفس الكود — يمنع "شغال هنا خربان هناك"
+
 set -e
+cd "$(dirname "$0")"
 
-echo "🚀 YJDownloadVideo — نشر تلقائي"
+# كل ملفات app/ — انسخها لكل الحاويات (لو نسيت ملف، حاوية بتشتغل بكود قديم)
+FILES=(
+  app/config.py
+  app/extractor.py
+  app/bot.py
+  app/worker.py
+  app/status.py
+  app/main.py
+  app/db.py
+  app/security.py
+)
 
-# 1) تثبيت Docker إن لم يكن موجودًا
-if ! command -v docker >/dev/null 2>&1; then
-  echo "📦 تثبيت Docker…"
-  apt-get update -y
-  apt-get install -y ca-certificates curl
-  install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-  chmod a+r /etc/apt/keyrings/docker.asc
-  . /etc/os-release
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $VERSION_CODENAME stable" > /etc/apt/sources.list.d/docker.list
-  apt-get update -y
-  apt-get install -y docker-ce docker-compose-plugin
-  systemctl enable docker || true
-  systemctl start docker || true
-fi
+CONTAINERS=(yjdownloadvideo-bot-1 yjdownloadvideo-worker-1 yjdownloadvideo-web-1)
 
-# 2) إعداد .env إن لم يوجد
-if [ ! -f .env ]; then
-  cp .env.example .env
-  # 🔐 SECRET_KEY عشوائي تلقائيًا — ممنوع الإقلاع بالقالب الضعيف
-  if grep -qE "^SECRET_KEY=change-this" .env; then
-    NEW_KEY=$(openssl rand -hex 32)
-    sed -i "s|^SECRET_KEY=change-this-to-a-long-random-secret$|SECRET_KEY=$NEW_KEY|" .env
-    echo "🔐 تم توليد SECRET_KEY عشوائي."
+for c in "${CONTAINERS[@]}"; do
+  if docker ps --format '{{.Names}}' | grep -q "^${c}$"; then
+    for f in "${FILES[@]}"; do
+      [ -f "$f" ] && docker cp "$f" "$c:/app/$f"
+    done
+    docker restart "$c"
+    echo "✅ $c محدّث"
   fi
-  echo "⚠️ أنشأنا .env من القالب — عدّل توكن البوت ومفاتيح API ثم أعد التشغيل: docker compose up -d"
-fi
+done
 
-# 3) بناء وتشغيل كل شيء (web + worker + bot + cleanup + redis + خادم 2GB المحلي)
-docker compose up --build -d
+# .env (إن تغيّر)
+for c in "${CONTAINERS[@]}"; do
+  if docker ps --format '{{.Names}}' | grep -q "^${c}$"; then
+    [ -f .env ] && docker cp .env "$c:/app/.env"
+  fi
+done
 
-# 4) فتح المنفذ في الجدار الناري
-if command -v ufw >/dev/null 2>&1; then
-  ufw allow 8000/tcp >/dev/null 2>&1 || true
-fi
-
-IP=$(curl -s --max-time 5 ifconfig.me || echo "SERVER_IP")
-echo ""
-echo "✅ تم النشر بنجاح!"
-echo "   🌐 الواجهة:      http://$IP:8000"
-echo "   🤖 البوت:        يعمل تلقائيًا (أرسل له أي رابط)"
-echo "   🗑️  الحذف:       المقاطع تُحذف تلقائيًا بعد 24 ساعة"
-echo ""
-echo "   📌 لتحديث BASE_URL بعنوانك العام اضبطه في .env ثم: docker compose up -d"
+echo "=== اكتمل النشر الموحّد ==="

@@ -37,49 +37,105 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def ip_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """تبديل IP التحميل (VPN) يدويًا — يكتب علم للمراقب على الهوست."""
+def _read_ip() -> str:
+    """قراءة IP الخروج الحالي من ملف التحكم المشترك."""
     import os
-    ctl = "/app/vpn-ctl"
-    cur = os.path.join(ctl, "current_ip.txt")
-    old_ip = "غير معروف"
-    if os.path.exists(cur):
+    p = "/app/vpn-ctl/current_ip.txt"
+    try:
+        if os.path.exists(p):
+            return open(p).read().strip() or "غير معروف"
+    except Exception:
+        pass
+    return "غير معروف"
+
+
+def _ask_rotate() -> bool:
+    """طلب تبديل — يكتب العلم للمراقب على الهوست. يرجع False عند الفشل."""
+    import os
+    try:
+        open("/app/vpn-ctl/rotate.now", "w").write("1")
+        return True
+    except Exception:
+        return False
+
+
+async def ip_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """يعرض الـ IP الحالي + زرّي تغيير/إلغاء."""
+    cur = _read_ip()
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🔄 تغيير", callback_data="ip:change"),
+        InlineKeyboardButton("❌ إلغاء", callback_data="ip:cancel"),
+    ]])
+    await update.message.reply_text(
+        f"🌐 الـ IP الحالي للتحميل:\n\n<code>{cur}</code>\n\n"
+        "اضغط تغيير لجلب عنوان جديد.",
+        reply_markup=kb, parse_mode="HTML")
+
+
+async def on_ip_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة زرّي تغيير/إلغاء — مع ضمان تغيير حقيقي (إعادة المحاولة تلقائيًا)."""
+    import os
+    query = update.callback_query
+    data = query.data or ""
+    await query.answer()
+    if data == "ip:cancel":
         try:
-            old_ip = open(cur).read().strip()
+            await query.message.delete()
         except Exception:
             pass
-    # طلب التبديل
-    try:
-        open(os.path.join(ctl, "rotate.now"), "w").write("1")
-    except Exception as e:
-        await update.message.reply_text(f"❌ تعذر طلب التبديل: {e}")
         return
-    await update.message.reply_text(
-        f"🔄 جاري تبديل الـ IP...\n\nالـ IP الحالي: {old_ip}\n\n(يستغرق ثوانٍ)")
-    # انتظر النتيجة
+    if data != "ip:change":
+        return
+
+    old_ip = _read_ip()
+    ctl = "/app/vpn-ctl"
+    cur = os.path.join(ctl, "current_ip.txt")
+
+    # تحديث الرسالة: جاري التغيير
+    try:
+        await query.message.edit_text(
+            f"🔄 جاري تغيير الـ IP...\n\nالـ IP الحالي: <code>{old_ip}</code>",
+            parse_mode="HTML")
+    except Exception:
+        pass
+
     import asyncio
-    for _ in range(18):  # حتى 90 ثانية
-        await asyncio.sleep(5)
-        if os.path.exists(cur):
-            try:
-                new_ip = open(cur).read().strip()
-            except Exception:
-                continue
-            if new_ip != old_ip:
-                await update.message.reply_text(f"✅ الـ IP الجديد: {new_ip}")
-                return
-        if not os.path.exists(os.path.join(ctl, "rotate.now")):
-            # اكتمل التبديل — اقرأ النتيجة النهائية
-            if os.path.exists(cur):
-                try:
-                    new_ip = open(cur).read().strip()
-                except Exception:
-                    new_ip = "غير معروف"
-                await update.message.reply_text(f"✅ الـ IP الحالي: {new_ip}")
-            else:
-                await update.message.reply_text("✅ تم التبديل")
+    MAX_TRIES = 6
+    for attempt in range(1, MAX_TRIES + 1):
+        if not _ask_rotate():
+            await query.message.edit_text("❌ تعذر طلب التبديل — تحقق من السيرفر.")
             return
-    await update.message.reply_text("⚠️ انتهت المهلة — تحقق من الـ IP لاحقًا.")
+        # انتظر معالجة المراقب (10 ثوانٍ دورة) + إعادة الاتصال
+        new_ip = old_ip
+        for _ in range(20):  # حتى ~100 ثانية لكل محاولة
+            await asyncio.sleep(5)
+            # علم ما زال موجودًا؟ المراقب لسه ما عالج
+            if not os.path.exists(os.path.join(ctl, "rotate.now")):
+                new_ip = _read_ip()
+                if new_ip != old_ip and new_ip != "غير معروف":
+                    break
+        if new_ip != old_ip and new_ip != "غير معروف":
+            try:
+                await query.message.edit_text(
+                    f"✅ تم التغيير!\n\nالـ IP القديم: <code>{old_ip}</code>\n"
+                    f"الـ IP الجديد: <code>{new_ip}</code>",
+                    parse_mode="HTML")
+            except Exception:
+                pass
+            return
+        # لم يتغير — أعد المحاولة
+        try:
+            await query.message.edit_text(
+                f"🔁 لم يتغير الـ IP (محاولة {attempt}/{MAX_TRIES}) — أعيد المحاولة...",
+                parse_mode="HTML")
+        except Exception:
+            pass
+
+    try:
+        await query.message.edit_text(
+            "⚠️ تعذر تغيير الـ IP بعد عدة محاولات — جرّب لاحقًا.", parse_mode="HTML")
+    except Exception:
+        pass
 
 
 # تفضيلات المستخدم: "ask" (افتراضي — اختيار عند كل رابط) | "audio" | "video"
@@ -751,10 +807,12 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("clearcookies", clear_cookies))
     app.add_handler(CommandHandler("ip", ip_command))
+    app.add_handler(CallbackQueryHandler(on_ip_callback, pattern=r"^ip:"))
     app.add_handler(CallbackQueryHandler(on_pick_callback, pattern=r"^pick:"))
     # ملاحظة: filters.Document كلاس في PTB v21 ويكسر المعالج — استخدم filters.ATTACHMENT (نسخة جاهزة)
     app.add_handler(MessageHandler(filters.ATTACHMENT, receive_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receive))
+    app.post_init = _set_bot_commands
     return app
 
 
@@ -779,6 +837,21 @@ async def handle_update_webhook(update: Update) -> None:
     await _webhook_app.process_update(update)
 
 
+
+
+async def _set_bot_commands(app: Application):
+    """تسجيل الأوامر الظاهرة فقط: /start و /ip (يحذف القديمة)."""
+    commands = [
+        {"command": "start", "description": "بدء المحادثة"},
+        {"command": "ip", "description": "عرض وتغيير عنوان التحميل (IP)"},
+    ]
+    try:
+        for scope in ({"type": "default"}, {"type": "all_private_chats"}, {"type": "all_group_chats"}):
+            await app.bot._post("deleteMyCommands", {"scope": scope})
+        await app.bot._post("setMyCommands", {"commands": commands, "scope": {"type": "default"}})
+        log.info("bot commands: start, ip")
+    except Exception:
+        log.exception("set_my_commands failed")
 
 
 def main():

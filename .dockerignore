@@ -1,0 +1,11 @@
+# منع نسخ المخلفات والبيانات إلى الصورة (كان سبب 6.15GB في الصور القديمة)
+data
+storage
+.git
+__pycache__
+*.pyc
+*.pyo
+deploy.sh
+*.md
+LICENSE
+.env.example

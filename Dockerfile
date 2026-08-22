@@ -4,7 +4,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir yt-dlp==2026.07.04
+RUN pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir yt-dlp==2026.08.19
 COPY . .
 RUN mkdir -p /app/data /app/storage
 EXPOSE 8000

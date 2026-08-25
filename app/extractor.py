@@ -41,6 +41,22 @@ BROWSER_HEADERS = {
 class DownloadError(Exception):
     """فشل استخراج/تحميل الفيديو من الرابط المعطى."""
 
+# أخطاء شبكة لحظية فقط (ومضة بعد تبديل الـ IP / انقطاع ثوانٍ) — تُعاد المحاولة نفسها بالضبط
+_TRANSIENT_RE = re.compile(
+    r"connection refused|connection reset|connection aborted"
+    r"|\[errno\s*(?:111|104|32|110)\]"
+    r"|timed?\s?-?out|temporary failure",
+    re.IGNORECASE,
+)
+
+
+def _is_transient_error(err: Exception) -> bool:
+    """True فقط للأخطاء اللحظية (رفض اتصال/إعادة ضبط/مهلة).
+    أخطاء يوتيوب المنطقية (403/Sign-in/bot/فيديو غير متاح) ليست لحظية → فشل فوري بلا إعادة،
+    حتى نبقى ضمن قاعدة «محاولة واحدة» ولا نضيف أنماط طلبات تثير شك يوتيوب."""
+    return bool(_TRANSIENT_RE.search(str(err)))
+
+
 def _ytdlp_headers() -> dict:
     """هيدرات المتصفح لطلبات yt-dlp — بدون Accept-Encoding:
     ترويسة br اليدوية تكسر استخراج player response في يوتيوب (yt-dlp يدير التشفير بنفسه)."""
@@ -219,9 +235,22 @@ class UniversalExtractor:
         if self.cookies_file:
             opts["cookiefile"] = self.cookies_file
         
-        # 🚀 محاولة واحدة فقط (بساطة = أمان — لا أنماط طلبات متعددة تثير شك يوتيوب)
-        with YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(clean_url, download=False)
+        # محاولة أساسية + إعادتان لنفس الطلب حرفيًا عند الأخطاء الشبكية اللحظية فقط
+        # (ومضة بعد تبديل الـ IP). نفس البصمة تمامًا = لا نمط طلبات جديد لليوتيوب.
+        last_err: Exception | None = None
+        for attempt in range(3):
+            try:
+                with YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(clean_url, download=False)
+                break
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+                if attempt < 2 and _is_transient_error(e):
+                    time.sleep(2)
+                    continue
+                raise
+        else:
+            raise DownloadError(f"الفحص فشل بعد 3 محاولات: {str(last_err)[:200]}")
         
         if not info:
             raise DownloadError("yt-dlp لم يُرجع بيانات")
@@ -236,10 +265,22 @@ class UniversalExtractor:
 
     def _download_ytdlp(self, url: str, outdir: Path, preferred: str) -> dict:
         from yt_dlp import YoutubeDL
-        # 🚀 محاولة واحدة فقط (بساطة = أمان — لا أنماط طلبات متعددة تثير شك يوتيوب)
+        # محاولة أساسية + إعادتان لنفس الطلب حرفيًا عند الأخطاء الشبكية اللحظية فقط
         opts = self._base_ytdlp_opts(outdir, preferred)
-        with YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
+        last_err: Exception | None = None
+        for attempt in range(3):
+            try:
+                with YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                break
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+                if attempt < 2 and _is_transient_error(e):
+                    time.sleep(2)
+                    continue
+                raise
+        else:
+            raise DownloadError(f"التحميل فشل بعد 3 محاولات: {str(last_err)[:200]}")
         files = [p for p in outdir.iterdir() if p.is_file()]
         if not files:
             raise DownloadError("لم يُنشأ ملف")

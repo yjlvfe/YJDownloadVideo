@@ -1,20 +1,59 @@
 services:
+  # ===== NordVPN داخل Docker (لا يمس شبكة الهوست إطلاقاً) =====
+  # كل حاويات التطبيق (web/bot/worker/cleanup) تشارك شبكة هذه الحاوية:
+  # network_mode: service:nordvpn — فخرجها كله عبر VPN، والهوست/SSH يبقى على IP السيرفر.
+  # الاختيار تلقائي: CONNECT=Germany يتصل بأفضل سيرفر (أقل حمل) في ألمانيا.
+  # التبديل اليدوي/التلقائي: سكربت الهوست rotate-vpn.sh عبر docker exec.
+  nordvpn:
+    image: ghcr.io/bubuntux/nordvpn@sha256:ac521b5a8d1387780d812a0ed46dd23aa3ee5e47d6d9f9eace39213ea1f56509
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - SYS_MODULE
+    environment:
+      TOKEN: ${NORDVPN_TOKEN}
+      CONNECT: Germany
+      TECHNOLOGY: NORDLYNX
+      DNS: 127.0.0.11
+    ports:
+      # بورت web انتقل لهنا (الحاويات المشاركة للشبكة لا تنشر بورتات بنفسها)
+      - "127.0.0.1:8000:8000"
+      # SOCKS5 لـ privoxy على الهوست (YJCryptoSignal geo-unblock) عبر VPN
+      - "127.0.0.1:1080:1080"
+    healthcheck:
+      test: ["CMD-SHELL", "nordvpn status 2>/dev/null | grep -q 'Status: Connected'"]
+      interval: 20s
+      timeout: 8s
+      retries: 5
+      start_period: 45s
+  # microsocks داخل شبكة NordVPN — للـ privoxy على الهوست (سلسلة geo-unblock القديمة)
+  socks:
+    build:
+      context: .
+      dockerfile: Dockerfile.microsocks
+    restart: unless-stopped
+    network_mode: service:nordvpn
+    depends_on:
+      nordvpn:
+        condition: service_started
   web:
     build: .
+    network_mode: service:nordvpn
     env_file: .env
     environment:
       REDIS_URL: redis://redis:6379/0
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-proxy-headers
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:8000:8000"
     volumes:
       - ./data:/app/data
       - ./storage:/app/storage
     depends_on:
+      - nordvpn
       - redis
   worker:
     build: .
+    network_mode: service:nordvpn
     env_file: .env
     environment:
       REDIS_URL: redis://redis:6379/0
@@ -24,10 +63,13 @@ services:
       - ./data:/app/data
       - ./storage:/app/storage
     depends_on:
+      nordvpn:
+        condition: service_started
       redis:
         condition: service_healthy
   bot:
     build: .
+    network_mode: service:nordvpn
     env_file: .env
     environment:
       REDIS_URL: redis://redis:6379/0
@@ -38,9 +80,11 @@ services:
       - ./storage:/app/storage
       - /opt/vpn-ctl:/app/vpn-ctl
     depends_on:
+      - nordvpn
       - redis
   cleanup:
     build: .
+    network_mode: service:nordvpn
     env_file: .env
     environment:
       REDIS_URL: redis://redis:6379/0
@@ -50,6 +94,7 @@ services:
       - ./data:/app/data
       - ./storage:/app/storage
     depends_on:
+      - nordvpn
       - redis
   redis:
     image: redis:7-alpine

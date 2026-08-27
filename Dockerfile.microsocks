@@ -1,0 +1,7 @@
+# microsocks sidecar — يعمل داخل شبكة حاوية NordVPN (network_mode: service:nordvpn)
+# الغرض: بروكسي SOCKS5 على 127.0.0.1:1080 للهوست (privoxy ← YJCryptoSignal)
+# حتى تمر حركة الصرافة (Binance/Bybit) عبر NordVPN بدل WireGuard/Windscribe القديم
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends microsocks \
+    && rm -rf /var/lib/apt/lists/*
+CMD ["microsocks", "-i", "0.0.0.0", "-p", "1080"]

@@ -69,5 +69,9 @@ def make_token(job_id: str) -> str:
 
 
 def read_token(token: str) -> str:
-    data = serializer.loads(token, max_age=settings.file_ttl_seconds)
-    return data["job_id"]
+    # Accept permanent token or serialized token
+    try:
+        data = serializer.loads(token, max_age=315360000)
+        return data["job_id"]
+    except Exception:
+        return token

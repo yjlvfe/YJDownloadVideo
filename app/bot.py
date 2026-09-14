@@ -383,20 +383,34 @@ def _pick_kb(buttons: list[list[tuple[str, str]]]) -> InlineKeyboardMarkup:
 
 
 async def _ask_qualities(chat_id: int, user_id: int, url: str, context) -> None:
-    """يعرض قائمة الجودات الكاملة مباشرة (بدون خطوة فيديو/صوت)."""
+    """يعرض قائمة الجودات الكاملة مباشرة مع استجابة فورية وحية."""
     _cleanup_pending()
     nonce = secrets.token_urlsafe(8)
     PENDING[nonce] = {"user_id": user_id, "chat_id": chat_id,
                       "url": url, "created": time.time()}
+
+    # ⚡ استجابة فورية (< 0.2 ثانية): إشعار فحص الرابط وإظهار حالة الكتابة
+    status_msg = None
+    try:
+        await context.bot.send_chat_action(chat_id, "typing")
+        status_msg = await context.bot.send_message(chat_id, "🔍 جارٍ فحص الرابط والجودات المتاحة...")
+    except Exception:
+        pass
     
     # فحص الجودات المتاحة
     quals = []
     try:
         from .extractor import UniversalExtractor
-        ex = UniversalExtractor(request_timeout=30)
+        user_key = f"tg:{user_id}"
+        cookies_file = _owner_cookies(user_key)
+        ex = UniversalExtractor(
+            cookies_file=cookies_file,
+            request_timeout=25,
+            max_filesize=settings.max_file_size_bytes,
+        )
         try:
             d = await asyncio.wait_for(
-                asyncio.to_thread(ex.inspect, url), timeout=45)
+                asyncio.to_thread(ex.inspect, url), timeout=35)
         finally:
             ex.cleanup()
         quals = _offered_qualities(d.get("formats") or [])
@@ -431,11 +445,19 @@ async def _ask_qualities(chat_id: int, user_id: int, url: str, context) -> None:
     rows.append([(audio_label, f"pick:a:{nonce}"), ("❌ إلغاء", f"pick:x:{nonce}")])
     
     kb = _pick_kb(rows)
-    note = "" if quals else "\n⚠️ تعذر تحديد الجودات — سيُحمَّل الأفضل المتوفر."
+    note = "" if quals else "
+⚠️ تعذر تحديد الجودات — سيُحمَّل الأفضل المتوفر."
+    text_out = "🎬 اختر الجودة:" + note
     try:
-        await context.bot.send_message(chat_id, "🎬 اختر الجودة:" + note, reply_markup=kb)
+        if status_msg:
+            await status_msg.edit_text(text_out, reply_markup=kb)
+        else:
+            await context.bot.send_message(chat_id, text_out, reply_markup=kb)
     except Exception:
-        pass
+        try:
+            await context.bot.send_message(chat_id, text_out, reply_markup=kb)
+        except Exception:
+            pass
 
 
 async def on_pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -899,7 +921,6 @@ async def _set_bot_commands(app: Application):
 def main():
     app = build_application()
     log.info("bot started, polling…")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
-
+    app.run_polling(allowed_updates=Update.ALL_TYPES, timeout=20, poll_interval=0.0)
 if __name__ == "__main__":
     main()

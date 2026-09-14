@@ -131,6 +131,16 @@ class ProgressHTTPXRequest(HTTPXRequest):
         connect_timeout=BaseRequest.DEFAULT_NONE,
         pool_timeout=BaseRequest.DEFAULT_NONE,
     ) -> tuple[int, bytes]:
+        files = request_data.multipart_data if request_data else None
+        # للأوامر العادية وgetUpdates ورسائل البوت: استخدام اتصال العميل الدائم في HTTPXRequest
+        # مع Connection Pool المستمر (تجنب إنشاء عميل جديد وتأسيس TCP/TLS في كل طلب)
+        if not files:
+            return await super().do_request(
+                url=url, method=method, request_data=request_data,
+                read_timeout=read_timeout, write_timeout=write_timeout,
+                connect_timeout=connect_timeout, pool_timeout=pool_timeout,
+            )
+
         last_error: Exception | None = None
         for attempt in range(3):
             _rewind_files(request_data)

@@ -36,7 +36,7 @@ services:
     network_mode: service:nordvpn
     depends_on:
       nordvpn:
-        condition: service_started
+        condition: service_healthy
   web:
     build: .
     network_mode: service:nordvpn
@@ -64,7 +64,7 @@ services:
       - ./storage:/app/storage
     depends_on:
       nordvpn:
-        condition: service_started
+        condition: service_healthy
       redis:
         condition: service_healthy
   bot:

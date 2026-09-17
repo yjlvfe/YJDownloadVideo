@@ -119,8 +119,8 @@ def inspect(data: InspectRequest, request: Request):
     )
     try:
         d = ex.inspect(url)
-    except Exception as e:
-        raise HTTPException(400, f'تعذر قراءة الفيديو: {str(e)[:180]}')
+    except Exception:
+        raise HTTPException(400, 'تعذر فحص الرابط. تأكد من أنه عام ويحتوي على وسائط قابلة للوصول.')
     finally:
         ex.cleanup()
     return {'title': d.get('title'), 'thumbnail': d.get('thumbnail'),

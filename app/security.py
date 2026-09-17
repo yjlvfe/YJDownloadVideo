@@ -58,9 +58,9 @@ def is_private_host(url: str) -> bool:
 def validate_public_url(raw: str) -> str:
     p = urlparse(raw.strip())
     if p.scheme not in {"http", "https"} or not p.hostname or p.username or p.password:
-        raise ValueError("الرابط غير صالح")
+        raise ValueError("أرسل رابطًا يبدأ بـ http:// أو https://")
     if _host_is_internal(p.hostname):
-        raise ValueError("لا يسمح بعنوان داخلي")
+        raise ValueError("هذا العنوان يشير إلى شبكة داخلية وغير مسموح به")
     return raw.strip()
 
 

@@ -26,17 +26,42 @@ def _spawn(coro):
     t.add_done_callback(_TASKS.discard)
     return t
 
+HELP_TEXT = (
+    "📖 <b>دليل الاستخدام</b>\n\n"
+    "أرسل رابطًا عامًا من يوتيوب أو تيك توك أو إنستغرام أو إكس أو فيسبوك، "
+    "أو من أي موقع ويب يوفّر وسائط قابلة للوصول.\n\n"
+    "✨ <b>ما يدعمه البوت:</b>\n"
+    "• تحميل الفيديو أو الصوت من المنصات الاجتماعية والمواقع المدعومة.\n"
+    "• ألبومات صور تيك توك كصور حقيقية بدقتها الأصلية، مع الصوت المرفق إن توفر.\n"
+    "• عدة روابط في رسالة واحدة؛ تُعرض وتُعالج بالترتيب.\n"
+    "• إرسال الفيديو كفيديو مباشر قابل للتشغيل والتقديم بسلاسة، مع شريط تقدم للتحميل والرفع.\n\n"
+    "⚙️ <b>الأوامر:</b>\n"
+    "/start — بدء الاستخدام\n"
+    "/help — عرض هذه المساعدة\n"
+    "/audio — إرسال الصوت مباشرة عند كل رابط\n"
+    "/video — إرسال أفضل فيديو مباشرة عند كل رابط\n"
+    "/reset — العودة إلى اختيار النوع والجودة\n"
+    "/ip — عرض أو تغيير عنوان التحميل عند وجود حظر شبكي\n"
+    "/clear — حذف ملفات الكوكيز المحفوظة\n\n"
+    "📎 للمحتوى الذي يتطلب تسجيل دخول، أرسل ملف كوكيز Netscape بصيغة .txt أولًا.\n"
+    "🚫 لا يمكن تحميل المحتوى الخاص أو المحمي بـ DRM أو أي محتوى يمنعه المصدر."
+)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = update.effective_user.full_name
     await update.message.reply_text(
-        f"أهلاً بك {user_name} 🤖\n\n"
-        "أرسل أي رابط فيديو — من أي موقع — وسأحمّله لك فورًا.\n\n"
-        "🎯 عند إرسال الرابط تظهر كل الجودات مباشرة (الصوت في الأخير).\n\n"
-        "⚙️ الأوامر:\n"
-        "🔄 /ip — تغيير عنوان التحميل (لو يوتيوب حظر الـ IP)\n"
-        "🧹 /clear — حذف كل الكوكيز بالكامل\n\n"
-        "الاستثناء الوحيد: البث المشفّر بالكامل (DRM) لا يمكن فكّه."
+        f"أهلًا بك {user_name} 🤖\n\n"
+        "أرسل رابطًا عامًا من أي منصة اجتماعية أو موقع ويب مدعوم، "
+        "وسأتيح لك اختيار فيديو/صوت والجودة المناسبة.\n\n"
+        "يدعم البوت ألبومات صور تيك توك، عدة روابط بالترتيب، وإرسال الفيديو "
+        "كفيديو مباشر قابل للتقديم بسلاسة.\n\n"
+        "استخدم /help للتفاصيل والأوامر."
     )
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(HELP_TEXT, parse_mode="HTML")
 
 
 def _read_ip() -> str:
@@ -569,9 +594,19 @@ async def receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"⚠️ {e}")
             return
 
-    # عرض الأزرار لكل رابط بالترتيب
+    # معالجة الروابط بالترتيب، مع احترام وضع المستخدم المحفوظ.
+    mode = _pref_mode(update.effective_user.id)
     for url in valid_urls:
-        await _ask_qualities(update.effective_chat.id, update.effective_user.id, url, context)
+        if mode in ("audio", "video"):
+            await _create_job(
+                update.effective_user.id,
+                update.effective_chat.id,
+                url,
+                mode if mode == "audio" else "best",
+                context,
+            )
+        else:
+            await _ask_qualities(update.effective_chat.id, update.effective_user.id, url, context)
 
 def _make_request(progress_cb=None):
     """مهلات طويلة + تتبع تقدم الرفع (PTB v21 حذف معامل progress من دوال الإرسال)."""
@@ -650,6 +685,26 @@ async def _edit_progress(msg, text: str):
         return await msg.edit_text(text)
     except Exception:  # noqa: BLE001
         return msg
+
+
+def _user_failure_reason(err: str | None) -> str:
+    """حوّل أخطاء المصدر/الشبكة إلى إرشاد واضح دون كشف تفاصيل داخلية."""
+    if not err:
+        return "تعذر الوصول إلى الوسائط أو إنشاء الملف."
+    low = err.lower()
+    if any(k in low for k in ("drm", "widevine", "playready", "fairplay", "license", "encrypt")):
+        return "المحتوى محمي بـ DRM ولا يمكن تحميله."
+    if any(k in low for k in ("login", "auth", "cookie", "membership", "subscription", "premium", "sign in", "private")):
+        return "المحتوى يتطلب تسجيل دخول أو صلاحية خاصة. أرسل كوكيز Netscape بصيغة .txt إذا كان لديك وصول مصرح به."
+    if any(k in low for k in ("403", "forbidden", "429", "too many requests", "blocked", "captcha")):
+        return "رفض المصدر الطلب أو فرض حدًا مؤقتًا. جرّب /ip لتغيير عنوان التحميل ثم أعد إرسال الرابط."
+    if any(k in low for k in ("live", "بث")):
+        return "البث المباشر غير مدعوم؛ أرسل رابط مقطع مسجل."
+    if any(k in low for k in ("duration", "مدة")):
+        return "مدة المقطع تتجاوز الحد المسموح."
+    if any(k in low for k in ("size", "حجم")):
+        return "حجم الملف يتجاوز الحد المسموح للتحميل."
+    return "تعذر تحميل هذا الرابط. تأكد من أنه عام ويحتوي على وسائط قابلة للوصول ثم جرّب مجددًا."
 
 
 async def watch_and_deliver(chat_id: int, jid: str, status_msg=None):
@@ -844,23 +899,12 @@ async def watch_and_deliver(chat_id: int, jid: str, status_msg=None):
             clear_status(jid)
             return
         elif state == "failed":
-            reason = ""
-            if err:
-                low = err.lower()
-                if any(k in low for k in ("drm", "widevine", "playready", "fairplay", "license", "encrypt")):
-                    reason = "\n🔒 السبب: هذا المحتوى مشفّر بـ DRM — لا يمكن تحميله (نظام حماية قانوني)."
-                elif any(k in low for k in ("login", "auth", "cookie", "403", "forbidden", "membership", "subscription", "premium", "sign in")):
-                    reason = ("\n🔐 يوتيوب حظر عنوان التحميل الحالي.\n"
-                              "🔄 الحل: أرسل /ip واضغط زر «تغيير» لجلب عنوان جديد، ثم أعد إرسال الرابط.\n"
-                              "👨‍💻 لو ما صلح بعد التغيير — تواصل مع المبرمج @YJLVFE")
-                elif any(k in low for k in ("live", "بث")):
-                    reason = "\n📡 السبب: هذا بث مباشر وليس مقطعًا مسجلًا."
-                else:
-                    reason = f"\n📋 التفاصيل التقنية: {err[:300]}"
+            reason = _user_failure_reason(err)
+            failure_text = f"❌ تعذر إكمال التحميل.\n\n{reason}\n\nأرسل رابطًا آخر أو استخدم /help للمساعدة."
             if bar is not None:
-                bar = await _edit_progress(bar, f"❌ فشلت المعالجة.{reason}\n\nأرسل الرابط هنا وسأشخّصه لك.")
+                bar = await _edit_progress(bar, failure_text)
             else:
-                await bot.send_message(chat_id, f"❌ فشلت المعالجة.{reason}\n\nأرسل الرابط هنا وسأشخّصه لك.")
+                await bot.send_message(chat_id, failure_text)
     finally:
         # 🧹 إغلاق عميل الرفع (AsyncClient + pool الاتصالات) — كان يتسرب لكل وظيفة
         try:
@@ -881,6 +925,10 @@ def build_application() -> Application:
         log.info("using local Bot API server: %s", base)
     app = builder.build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("audio", audio_mode))
+    app.add_handler(CommandHandler("video", video_mode))
+    app.add_handler(CommandHandler("reset", reset_mode))
     app.add_handler(CommandHandler("clear", clear_all))
     app.add_handler(CommandHandler("ip", ip_command))
     app.add_handler(CallbackQueryHandler(on_ip_callback, pattern=r"^ip:"))
@@ -916,17 +964,21 @@ async def handle_update_webhook(update: Update) -> None:
 
 
 async def _set_bot_commands(app: Application):
-    """تسجيل الأوامر الظاهرة فقط: /start و /ip (يحذف القديمة)."""
+    """تسجيل الأوامر المتاحة للمستخدم."""
     commands = [
-        {"command": "start", "description": "بدء المحادثة"},
-        {"command": "ip", "description": "عرض وتغيير عنوان التحميل (IP)"},
-        {"command": "clear", "description": "حذف كل الكوكيز بالكامل"},
+        {"command": "start", "description": "بدء الاستخدام"},
+        {"command": "help", "description": "عرض المساعدة والميزات"},
+        {"command": "audio", "description": "تفعيل وضع الصوت"},
+        {"command": "video", "description": "تفعيل وضع الفيديو"},
+        {"command": "reset", "description": "اختيار النوع والجودة عند كل رابط"},
+        {"command": "ip", "description": "عرض أو تغيير عنوان التحميل"},
+        {"command": "clear", "description": "حذف ملفات الكوكيز المحفوظة"},
     ]
     try:
         for scope in ({"type": "default"}, {"type": "all_private_chats"}, {"type": "all_group_chats"}):
             await app.bot._post("deleteMyCommands", {"scope": scope})
         await app.bot._post("setMyCommands", {"commands": commands, "scope": {"type": "default"}})
-        log.info("bot commands: start, ip, clear")
+        log.info("bot commands: start, help, audio, video, reset, ip, clear")
     except Exception:
         log.exception("set_my_commands failed")
 

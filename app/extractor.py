@@ -217,6 +217,20 @@ class UniversalExtractor:
                 files = [p for p in outdir.iterdir() if p.is_file() and p.name != "photos.json"]
                 if files:
                     path = max(files, key=lambda p: p.stat().st_mtime)
+                    if preferred != "audio" and path.suffix.lower() == ".mp4":
+                        try:
+                            import subprocess
+                            from app.extractor import ffmpeg_location
+                            fixed_tmp = path.with_suffix(".faststart.tmp")
+                            res = subprocess.run(
+                                [ffmpeg_location() or "ffmpeg", "-y", "-v", "error", "-i", str(path),
+                                 "-c", "copy", "-movflags", "+faststart", str(fixed_tmp)],
+                                capture_output=True, timeout=120
+                            )
+                            if res.returncode == 0 and fixed_tmp.is_file() and fixed_tmp.stat().st_size > 1024:
+                                fixed_tmp.replace(path)
+                        except Exception:
+                            pass
                     return {
                         "path": str(path),
                         "ext": path.suffix.lstrip("."),
@@ -321,6 +335,19 @@ class UniversalExtractor:
                                 for chunk in resp.iter_bytes(65536):
                                     f.write(chunk)
                             if fpath.stat().st_size > 1024:
+                                # تطبيق faststart على التنزيل المباشر أيضاً
+                                try:
+                                    import subprocess
+                                    fixed_tmp = fpath.with_suffix(".faststart.tmp")
+                                    subprocess.run(
+                                        ["ffmpeg", "-y", "-v", "error", "-i", str(fpath),
+                                         "-c", "copy", "-movflags", "+faststart", str(fixed_tmp)],
+                                        capture_output=True, timeout=120
+                                    )
+                                    if fixed_tmp.is_file() and fixed_tmp.stat().st_size > 1024:
+                                        fixed_tmp.replace(fpath)
+                                except Exception:
+                                    pass
                                 return {
                                     "path": str(fpath),
                                     "ext": "mp4",
@@ -557,6 +584,23 @@ class UniversalExtractor:
                     p.unlink(missing_ok=True)
                 except Exception:  # noqa: BLE001
                     pass
+
+        # 🚀 إصلاح التنقل والتقديم في الثواني لجميع مقاطع الفيديو:
+        # إزالة التجزئة (De-fragmentation) ونقل moov atom إلى بداية الملف (+faststart)
+        # هذا يمنع مشكلة إعادة تشغيل الفيديو من البداية عند تقديم الثواني في تيليجرام
+        if preferred != "audio" and path.suffix.lower() == ".mp4":
+            try:
+                import subprocess
+                fixed_tmp = path.with_suffix(".faststart.tmp")
+                res = subprocess.run(
+                    [ffmpeg_location() or "ffmpeg", "-y", "-v", "error", "-i", str(path),
+                     "-c", "copy", "-movflags", "+faststart", str(fixed_tmp)],
+                    capture_output=True, timeout=120
+                )
+                if res.returncode == 0 and fixed_tmp.is_file() and fixed_tmp.stat().st_size > 1024:
+                    fixed_tmp.replace(path)
+            except Exception:
+                pass
 
         if self.max_duration and info.get("duration") and info["duration"] > self.max_duration:
             raise DownloadError("مدة الفيديو تتجاوز الحد المسموح")

@@ -3,11 +3,19 @@ __pycache__/
 .pytest_cache/
 .venv/
 node_modules/
+
+# Local configuration and secrets: keep only the safe template tracked.
+.env
+.env.*
+!.env.example
+
+# Runtime data
 data/
 storage/
 downloads/
 *.db
 *.sqlite3
 *.log
-.DS_Store
 data/cookies/*.txt
+
+.DS_Store

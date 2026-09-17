@@ -13,7 +13,7 @@ services:
       - SYS_MODULE
     environment:
       TOKEN: ${NORDVPN_TOKEN}
-      CONNECT: Germany
+      CONNECT: ${NORDVPN_CONNECT:-Germany}
       TECHNOLOGY: NORDLYNX
       DNS: 127.0.0.11
     ports:

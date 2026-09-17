@@ -382,82 +382,52 @@ def _pick_kb(buttons: list[list[tuple[str, str]]]) -> InlineKeyboardMarkup:
     ])
 
 
+async def _schedule_pending_expiry(chat_id: int, message_id: int, nonce: str, context) -> None:
+    """يحذف رسالة الأزرار ويلغي الطلب المعلق تلقائياً بعد 5 دقائق إذا لم يضغط المستخدم أي خيار."""
+    try:
+        await asyncio.sleep(_PICK_TTL)
+        if nonce in PENDING:
+            PENDING.pop(nonce, None)
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception:
+                pass
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        pass
+
+
 async def _ask_qualities(chat_id: int, user_id: int, url: str, context) -> None:
-    """يعرض قائمة الجودات الكاملة مباشرة مع استجابة فورية وحية."""
+    """استجابة فورية فائقة السرعة (< 0.05 ثانية):
+    تخيير المستخدم فقط بين (فيديو / صورة) أو (صوت)
+    مع حذف الأزرار وإلغاء الطلب تلقائياً بعد 5 دقائق دون زر إلغاء يدوي.
+    رسالة نظيفة ومباشرة بدون روابط أو أرقام مشوهة للشكل.
+    """
     _cleanup_pending()
     nonce = secrets.token_urlsafe(8)
-    PENDING[nonce] = {"user_id": user_id, "chat_id": chat_id,
-                      "url": url, "created": time.time()}
+    PENDING[nonce] = {
+        "user_id": user_id,
+        "chat_id": chat_id,
+        "url": url,
+        "created": time.time(),
+        "offered": {"best", "audio"}
+    }
 
-    # ⚡ استجابة فورية (< 0.2 ثانية): إشعار فحص الرابط وإظهار حالة الكتابة
-    status_msg = None
+    buttons = [
+        [
+            InlineKeyboardButton("فيديو / صورة", callback_data=f"pick:q:{nonce}:best"),
+            InlineKeyboardButton("صوت", callback_data=f"pick:a:{nonce}"),
+        ]
+    ]
+    kb = InlineKeyboardMarkup(buttons)
+    text_out = "📥 اختر نوع التحميل المطلوب:"
     try:
-        await context.bot.send_chat_action(chat_id, "typing")
-        status_msg = await context.bot.send_message(chat_id, "🔍 جارٍ فحص الرابط والجودات المتاحة...")
+        msg = await context.bot.send_message(chat_id, text_out, reply_markup=kb)
+        if msg:
+            _spawn(_schedule_pending_expiry(chat_id, msg.message_id, nonce, context))
     except Exception:
         pass
-    
-    # فحص الجودات المتاحة
-    quals = []
-    try:
-        from .extractor import UniversalExtractor
-        user_key = f"tg:{user_id}"
-        cookies_file = _owner_cookies(user_key)
-        ex = UniversalExtractor(
-            cookies_file=cookies_file,
-            request_timeout=25,
-            max_filesize=settings.max_file_size_bytes,
-        )
-        try:
-            d = await asyncio.wait_for(
-                asyncio.to_thread(ex.inspect, url), timeout=35)
-        finally:
-            ex.cleanup()
-        quals = _offered_qualities(d.get("formats") or [])
-    except Exception:
-        pass
-    
-    # 📌 ضبط الجودات المعروضة (يُتحقق منها عند الضغط — يمنع جودات غير معروضة)
-    heights = {str(q["height"]) for q in quals}
-    PENDING[nonce]["offered"] = {"best", "audio", *heights}
-    
-    # بناء الأزرار
-    rows = []
-    # الأفضل دائماً أول زر
-    rows.append([("⭐ الأفضل", f"pick:q:{nonce}:best")])
-    # الجودات حسب الارتفاع
-    row = []
-    for q in quals:
-        label = f"{q['height']}p"
-        if q.get('size'):
-            label += f" · {_fmt_mb(q['size'])}"
-        row.append((label, f"pick:q:{nonce}:{q['height']}"))
-        if len(row) == 2:
-            rows.append(row)
-            row = []
-    if row:
-        rows.append(row)
-    # الصوت دائماً في الأخير
-    audio_size = None
-    if quals:
-        audio_size = quals[-1].get("size")
-    audio_label = "🎵 صوت" + (f" · {_fmt_mb(audio_size)}" if audio_size else "")
-    rows.append([(audio_label, f"pick:a:{nonce}"), ("❌ إلغاء", f"pick:x:{nonce}")])
-    
-    kb = _pick_kb(rows)
-    note = "" if quals else "
-⚠️ تعذر تحديد الجودات — سيُحمَّل الأفضل المتوفر."
-    text_out = "🎬 اختر الجودة:" + note
-    try:
-        if status_msg:
-            await status_msg.edit_text(text_out, reply_markup=kb)
-        else:
-            await context.bot.send_message(chat_id, text_out, reply_markup=kb)
-    except Exception:
-        try:
-            await context.bot.send_message(chat_id, text_out, reply_markup=kb)
-        except Exception:
-            pass
 
 
 async def on_pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -565,13 +535,8 @@ async def on_pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if kind == "a":
         fmt = "audio"
-    elif kind == "q" and len(parts) >= 4:
-        # الجودة يجب أن تكون مما عُرض فعلاً على المستخدم (من فحص المقطع)
-        offered = pending.get("offered") or {"best"}
-        if parts[3] not in offered:
-            await query.answer("❌ هذه الجودة غير متاحة لهذا المقطع", show_alert=True)
-            return
-        fmt = parts[3]
+    elif kind == "q":
+        fmt = "best"
     else:
         await query.answer("❌ اختيار غير صالح")
         return
@@ -584,16 +549,29 @@ async def on_pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url = (update.message.text or "").strip()
-    try:
-        validate_public_url(url)
-    except ValueError as e:
-        await update.message.reply_text(f"⚠️ {e}")
-        return
+    import re
+    text = (update.message.text or "").strip()
+    # استخراج كافة الروابط الموجودة في الرسالة بالترتيب
+    pattern = r"https?://[^\s<>\"'\)\(]+"
+    raw_urls = re.findall(pattern, text)
+    valid_urls = []
+    for u in raw_urls:
+        try:
+            valid_urls.append(validate_public_url(u))
+        except ValueError:
+            pass
 
-    mode = _pref_mode(update.effective_user.id)
-    # مباشرة: عرض الجودات
-    await _ask_qualities(update.effective_chat.id, update.effective_user.id, url, context)
+    if not valid_urls:
+        # إذا لم يتم استخراج روابط بالنمط، نفحص النص كاملاً لرسالة الخطأ المعتادة
+        try:
+            validate_public_url(text)
+        except ValueError as e:
+            await update.message.reply_text(f"⚠️ {e}")
+            return
+
+    # عرض الأزرار لكل رابط بالترتيب
+    for url in valid_urls:
+        await _ask_qualities(update.effective_chat.id, update.effective_user.id, url, context)
 
 def _make_request(progress_cb=None):
     """مهلات طويلة + تتبع تقدم الرفع (PTB v21 حذف معامل progress من دوال الإرسال)."""
@@ -772,19 +750,54 @@ async def watch_and_deliver(chat_id: int, jid: str, status_msg=None):
             if bar is not None:
                 bar = await _edit_progress(bar, f"✅ تم التحميل ({size_str}) — ⬆️ {_progress_bar(0)} 0% — جارٍ الرفع")
             up_state["pct"] = 0
-            caption = (title or "الفيديو")[:1024]
+            caption = (title or "المقطع")[:1024]
 
             async def do_send():
                 # InputFile(read_file_handle=False): يبقي الملف متدفقًا (بدل قراءته كاملًا في الذاكرة)
-                # — ضروري لتتبع التقدم ولتفادي استهلاك 2GB رام للملفات الكبيرة
-                from telegram import InputFile
+                from telegram import InputFile, InputMediaPhoto
+                import json
+
+                # 📸 فحص إذا كان الناتج ألبوم صور (Photos):
+                is_photos_job = False
+                if path.endswith("photos.json") or path.endswith(".json"):
+                    try:
+                        p_obj = json.loads(Path(path).read_text(encoding="utf-8"))
+                        if isinstance(p_obj, dict) and p_obj.get("type") == "photos":
+                            is_photos_job = True
+                            photo_files = p_obj.get("photos", [])
+                            audio_file = p_obj.get("audio")
+                            album_title = p_obj.get("title") or caption
+
+                            # إرسال ألبوم الصور (تيليجرام يدعم مجموعات حتى 10 صور في كل MediaGroup)
+                            for chunk_start in range(0, len(photo_files), 10):
+                                chunk = photo_files[chunk_start:chunk_start + 10]
+                                handles = [open(f, "rb") for f in chunk]
+                                try:
+                                    media_group = []
+                                    for idx, h in enumerate(handles):
+                                        c = f"📸 {album_title}" if (chunk_start == 0 and idx == 0) else None
+                                        media_group.append(InputMediaPhoto(media=h, caption=c))
+                                    await bot.send_media_group(chat_id, media=media_group)
+                                finally:
+                                    for h in handles:
+                                        try:
+                                            h.close()
+                                        except Exception:
+                                            pass
+                            # إذا كان هناك مقطع صوتي مصاحب للصور
+                            if audio_file and Path(audio_file).is_file():
+                                with open(audio_file, "rb") as af:
+                                    await bot.send_audio(chat_id, InputFile(af, read_file_handle=False), caption=f"🎵 {album_title}")
+                            return
+                    except Exception as pe:
+                        log.exception("failed to send photo album: %s", pe)
+
                 if is_audio:
                     with open(path, "rb") as f:
                         # الصوت: اسم المقطع في الوصف
                         await bot.send_audio(chat_id, InputFile(f, read_file_handle=False), caption=f"🎵 {caption}")
                 else:
-                    # 🎬 معاينة + بيانات حقيقية: بدونها يعرض تيليجرام الفيديو كملف (duration=0)
-                    # لأن خادم Bot API المحلي لا يعالج الملفات تلقائيًا — نجهّزها بأنفسنا
+                    # 🎬 إرسال فيديو متدفق أصلي دائماً (حتى 2GB) — ليس ملف/مستند أبداً
                     meta = _video_meta(path, Path(path).parent)
                     thumb_path = meta.pop("thumbnail", None)
                     with open(path, "rb") as f:

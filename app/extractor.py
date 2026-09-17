@@ -93,15 +93,263 @@ class UniversalExtractor:
     # ------------------------------------------------------------------
     # واجهة عامة
     # ------------------------------------------------------------------
+    def _fetch_tiktok_photos_info(self, url: str) -> dict | None:
+        """يستخرج صور تيك توك وتفاصيلها إذا كان الرابط لمنشور صور (Photo Mode)."""
+        import re, json, httpx
+        # تيك توك يحتاج Mobile User-Agent لتجاوز صفحة تسجيل الدخول وإرجاع بيانات الصور
+        headers = {
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        try:
+            with httpx.Client(follow_redirects=True, timeout=15.0, headers=headers) as client:
+                resp = client.get(url)
+                html = resp.text
+
+            m = re.search(r'<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">(.*?)</script>', html, re.DOTALL)
+            if not m:
+                return None
+            data = json.loads(m.group(1))
+            scope = data.get("__DEFAULT_SCOPE__", {})
+            detail = scope.get("webapp.reflow.video.detail") or scope.get("webapp.video-detail") or {}
+            item = detail.get("itemInfo", {}).get("itemStruct", {})
+            if not item:
+                for k, v in scope.items():
+                    if isinstance(v, dict) and "itemInfo" in v:
+                        item = v.get("itemInfo", {}).get("itemStruct", {})
+                        if item:
+                            break
+            if not item:
+                return None
+            images_raw = item.get("imagePost", {}).get("images", [])
+            if not images_raw:
+                return None
+
+            image_urls = []
+            for img in images_raw:
+                url_list = img.get("imageURL", {}).get("urlList", [])
+                if url_list:
+                    image_urls.append(url_list[0])
+
+            music_url = item.get("music", {}).get("playUrl")
+            title = item.get("desc") or "صور تيك توك"
+            thumb = image_urls[0] if image_urls else ""
+            return {
+                "images": image_urls,
+                "music": music_url,
+                "title": title,
+                "thumbnail": thumb
+            }
+        except Exception:
+            return None
+
     def download(self, url: str, outdir: Path, preferred: str = "best",
                  title_hint: str = "") -> dict:
-        """ينزّل الفيديو — مسار واحد: yt-dlp مع كوكيز (نفس متصفح المستخدم بالضبط).
-
-        البساطة = أمان: مسار واحد فقط — yt-dlp مع بروكسي/كوكيز، بلا أنماط طلبات متعددة.
+        """ينزّل الفيديو — مسار واحد: yt-dlp مع كوكيز (نفس متصفح المستخدم بالضبط)، مع دعم ألبوم صور تيك توك.
         """
         outdir = Path(outdir)
         outdir.mkdir(parents=True, exist_ok=True)
-        return self._download_ytdlp(url, outdir, preferred)
+
+        # 📸 فحص صور تيك توك قبل yt-dlp
+        if "tiktok.com" in url.lower():
+            photo_info = self._fetch_tiktok_photos_info(url)
+            if photo_info and photo_info.get("images"):
+                import httpx, json
+                image_files = []
+                with httpx.Client(follow_redirects=True, timeout=20.0) as client:
+                    for idx, img_url in enumerate(photo_info["images"]):
+                        try:
+                            r = client.get(img_url)
+                            if r.status_code == 200:
+                                fpath = outdir / f"photo_{idx + 1:02d}.jpg"
+                                fpath.write_bytes(r.content)
+                                image_files.append(str(fpath))
+                        except Exception:
+                            pass
+                    audio_path = None
+                    if photo_info.get("music"):
+                        try:
+                            ar = client.get(photo_info["music"])
+                            if ar.status_code == 200:
+                                apath = outdir / "music.mp3"
+                                apath.write_bytes(ar.content)
+                                audio_path = str(apath)
+                        except Exception:
+                            pass
+
+                if image_files:
+                    payload = {
+                        "type": "photos",
+                        "title": photo_info.get("title") or "صور تيك توك",
+                        "photos": image_files,
+                        "audio": audio_path
+                    }
+                    meta_file = outdir / "photos.json"
+                    meta_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                    return {
+                        "path": str(meta_file),
+                        "ext": "json",
+                        "duration": None,
+                        "thumbnail": photo_info.get("thumbnail"),
+                        "title": photo_info.get("title"),
+                        "is_photos": True,
+                        "photos": image_files,
+                        "audio": audio_path
+                    }
+
+        # 1. محاولة التحميل عبر yt-dlp أولاً (يوتيوب والسوشال ميديا والمواقع المدعومة)
+        try:
+            return self._download_ytdlp(url, outdir, preferred)
+        except Exception as e:
+            # إذا كان الرابط يوتيوب أو سوشال ميديا معروفة (إنستغرام/تيك توك)، نرمي الخطأ دون مسح صفحات
+            u_low = url.lower()
+            if any(dom in u_low for dom in ("youtube.com", "youtu.be", "instagram.com", "tiktok.com")):
+                raise
+            # إذا كان الخطأ 403 أو حظر، نجرب التنزيل مع انتحال بصمة المتصفح مباشرة للرابط نفسه
+            try:
+                from yt_dlp.networking.impersonate import ImpersonateTarget
+                from yt_dlp import YoutubeDL
+                opts = self._base_ytdlp_opts(outdir, preferred)
+                opts["impersonate"] = ImpersonateTarget.from_str("chrome")
+                with YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                files = [p for p in outdir.iterdir() if p.is_file() and p.name != "photos.json"]
+                if files:
+                    path = max(files, key=lambda p: p.stat().st_mtime)
+                    return {
+                        "path": str(path),
+                        "ext": path.suffix.lstrip("."),
+                        "duration": info.get("duration") if info else None,
+                        "thumbnail": info.get("thumbnail") if info else "",
+                        "title": info.get("title") if info else "فيديو"
+                    }
+            except Exception:
+                pass
+
+            # للمواقع الأخرى: فحص ومسح كود الصفحة للبحث عن الفيديو المباشر أو المانيفست (HLS/DASH/MP4)
+            fallback_res = self._download_web_fallback(url, outdir, preferred)
+            if fallback_res:
+                return fallback_res
+            raise e
+
+    def _download_web_fallback(self, url: str, outdir: Path, preferred: str = "best") -> dict | None:
+        """مسار بديل للمواقع الأخرى غير المدعومة في yt-dlp:
+        يبحث في HTML عن وسوم <video>, <source>, og:video, json-ld وروابط mp4/m3u8 وينزلها مباشرة.
+        """
+        import re, json, httpx
+        from urllib.parse import urljoin
+        from yt_dlp import YoutubeDL
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Referer": url,
+        }
+
+        # 1. جلب محتوى الصفحة
+        try:
+            with httpx.Client(follow_redirects=True, timeout=15.0, headers=headers) as client:
+                r = client.get(url)
+                if r.status_code != 200:
+                    return None
+                html = r.text
+                final_url = str(r.url)
+        except Exception:
+            return None
+
+        candidates = []
+
+        # وسوم video و source
+        for tag in re.findall(r"<(?:video|source)\b[^>]*>", html, re.I):
+            attrs = dict(re.findall(r'([a-zA-Z-]+)\s*=\s*["\']([^"\']*)["\']', tag))
+            for k in ("src", "data-src", "data-url", "data-source", "data-video", "data-file"):
+                if attrs.get(k):
+                    candidates.append(urljoin(final_url, attrs[k]))
+
+        # روابط التنزيل المباشرة في وسوم <a> href
+        for href in re.findall(r'href=["\']([^"\']+\.(?:mp4|m3u8|webm))["\']', html, re.I):
+            candidates.append(urljoin(final_url, href))
+
+        # وسوم meta
+        for m in re.finditer(r'<meta[^>]+(?:property|name)=["\'](og:video(?::url|:secure_url)?|twitter:player:stream)["\'][^>]*content=["\']([^"\']+)["\']', html, re.I):
+            candidates.append(urljoin(final_url, m.group(2)))
+
+        # JSON-LD
+        for m in re.finditer(r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', html, re.S | re.I):
+            try:
+                data = json.loads(m.group(1))
+                nodes = data if isinstance(data, list) else [data]
+                for node in nodes:
+                    if isinstance(node, dict):
+                        for k in ("contentUrl", "embedUrl", "url", "content_url"):
+                            val = node.get(k)
+                            if isinstance(val, str) and re.search(r"\.(mp4|webm|m3u8|mpd)", val, re.I):
+                                candidates.append(urljoin(final_url, val))
+            except Exception:
+                pass
+
+        # روابط صريحة داخل الكود
+        for m in re.finditer(r'https?://[^\s"\'<>]+\.(?:mp4|m3u8|webm)', html, re.I):
+            candidates.append(m.group(0))
+
+        # تنقية الروابط
+        seen = set()
+        valid_candidates = []
+        for c in candidates:
+            c = c.replace("\\/", "/")
+            if c not in seen and not any(ext in c.lower() for ext in (".jpg", ".jpeg", ".png", ".webp", ".gif")):
+                seen.add(c)
+                valid_candidates.append(c)
+
+        # استخراج العنوان
+        title = "video"
+        tm = re.search(r"<title[^>]*>(.*?)</title>", html, re.S | re.I)
+        if tm:
+            title = re.sub(r"\s+", " ", tm.group(1)).strip()[:100]
+
+        # 2. تجربة تنزيل أول مرشح صالح عبر yt-dlp أو التحميل المباشر
+        for cand_url in valid_candidates:
+            # تحميل مباشر أولاً إذا كان الرابط ينتهي بـ mp4 أو webm
+            if re.search(r"\.(mp4|webm)($|\?)", cand_url, re.I):
+                try:
+                    safe_name = re.sub(r'[\\/*?:"<>|]', "_", title)[:50].strip() or "video"
+                    fpath = outdir / f"{safe_name}.mp4"
+                    with httpx.stream("GET", cand_url, headers=headers, follow_redirects=True, timeout=45.0) as resp:
+                        if resp.status_code == 200:
+                            with open(fpath, "wb") as f:
+                                for chunk in resp.iter_bytes(65536):
+                                    f.write(chunk)
+                            if fpath.stat().st_size > 1024:
+                                return {
+                                    "path": str(fpath),
+                                    "ext": "mp4",
+                                    "duration": None,
+                                    "thumbnail": "",
+                                    "title": title
+                                }
+                except Exception:
+                    pass
+
+            try:
+                opts = self._base_ytdlp_opts(outdir, preferred)
+                opts["http_headers"]["Referer"] = url
+                with YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(cand_url, download=True)
+                files = [p for p in outdir.iterdir() if p.is_file() and p.name != "photos.json"]
+                if files:
+                    path = max(files, key=lambda p: p.stat().st_mtime)
+                    return {
+                        "path": str(path),
+                        "ext": path.suffix.lstrip("."),
+                        "duration": info.get("duration") if info else None,
+                        "thumbnail": info.get("thumbnail") if info else "",
+                        "title": title or (info.get("title") if info else "فيديو")
+                    }
+            except Exception:
+                pass
+
+        return None
 
     def inspect(self, url: str) -> dict:
         """معاينة سريعة لأي رابط: yt-dlp أولاً (قائمة جودات حقيقية)، ثم المسح/المتصفح.
@@ -203,9 +451,13 @@ class UniversalExtractor:
             # 🚀 تسريع: 16 اتصال متوازي للأجزاء (يكسر خنق يوتيوب لـ IP السيرفرات)
             # يوتيوب يخنق كل اتصال مفرد ~3MB/s → 16 اتصال = حتى ~50MB/s
             "concurrent_fragment_downloads": 16,
-            # ⚠️ لا extractor_args لعميل android — يجبر يوتيوب على إرجاع تنسيق واحد فقط (360p)
-            # ويوقف دمج العملاء الآخرين. العميل الافتراضي (web) يعيد كل الجودات حتى 4K/8K.
         }
+        # تمكين انتحال بصمة المتصفح لتجاوز حظر الـ 403 / Cloudflare في المواقع العامة
+        try:
+            from yt_dlp.networking.impersonate import ImpersonateTarget
+            opts["impersonate"] = ImpersonateTarget.from_str("chrome")
+        except Exception:
+            pass
         if self.cookies_file:
             opts["cookiefile"] = self.cookies_file
         if getattr(settings, "ytdlp_proxy", ""):
@@ -230,6 +482,11 @@ class UniversalExtractor:
             "no_warnings": True, "socket_timeout": 30,
             "http_headers": _ytdlp_headers(),
         }
+        try:
+            from yt_dlp.networking.impersonate import ImpersonateTarget
+            opts["impersonate"] = ImpersonateTarget.from_str("chrome")
+        except Exception:
+            pass
         if getattr(settings, "ytdlp_proxy", ""):
             opts["proxy"] = settings.ytdlp_proxy
         if self.cookies_file:

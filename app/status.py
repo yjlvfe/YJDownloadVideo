@@ -12,6 +12,7 @@ def write_status(job_id: str, stage: str, pct: int = 0, size: int = 0,
     كتابة ذرّية (tmp + os.replace): القارئ في حاوية أخرى لا يلتقط ملفًا نصف مكتوب.
     """
     try:
+        settings.status_path.mkdir(parents=True, exist_ok=True)
         p = settings.status_path / f"{job_id}.json"
         tmp = p.with_suffix(".json.tmp")
         tmp.write_text(json.dumps({
@@ -23,7 +24,7 @@ def write_status(job_id: str, stage: str, pct: int = 0, size: int = 0,
         }, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, p)
     except Exception:  # noqa: BLE001
-        log.exception("write_status failed for %s", job_id)
+        pass
 
 
 def read_status(job_id: str) -> dict | None:

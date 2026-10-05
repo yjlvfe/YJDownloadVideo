@@ -284,8 +284,8 @@ class UniversalExtractor:
         opts["outtmpl"] = str(outdir / f"{safe_title}.%(ext)s")
         opts["http_headers"]["Referer"] = info.get("referer", "https://vidvara.cc/")
         opts["hls_prefer_native"] = True
-        opts["concurrent_fragment_downloads"] = 1
-        opts["socket_timeout"] = 60
+        opts["concurrent_fragment_downloads"] = 8
+        opts["socket_timeout"] = 45
         opts["fragment_retries"] = 10
         opts["retries"] = 10
 

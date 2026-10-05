@@ -145,11 +145,14 @@ class UniversalExtractor:
             return None
 
     def _fetch_vidara_info(self, url: str) -> dict | None:
-        """يستخرج معلومات البث المباشر لشبكة Vidara / Vidvara / 4kvideo."""
+        """يستخرج معلومات البث المباشر لشبكة Vidara / Vidvara / 4kvideo أو صفحات المشاهدة التي تضمنها (مثل WeCima / MyCima)."""
         import re, httpx
-        from urllib.parse import urlparse
+        from urllib.parse import urlparse, urljoin
 
         m = re.search(r'(?:vidara\.(?:to|so|cc|net)|vidvara\.(?:cc|to|so)|4kvideo\.cc)/(?:v|e)/([a-zA-Z0-9]+)', url, re.I)
+        page_title = ""
+        page_thumb = ""
+
         if not m:
             u_low = url.lower()
             if not any(dom in u_low for dom in ("youtube.com", "youtu.be", "instagram.com", "tiktok.com", "x.com", "twitter.com")):
@@ -158,10 +161,75 @@ class UniversalExtractor:
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
                         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                     }
-                    with httpx.Client(follow_redirects=True, timeout=10.0, headers=headers) as client:
+                    with httpx.Client(follow_redirects=True, timeout=12.0, headers=headers) as client:
                         resp = client.get(url)
                         if resp.status_code == 200:
-                            m = re.search(r'(?:vidara\.(?:to|so|cc|net)|vidvara\.(?:cc|to|so)|4kvideo\.cc)/(?:v|e)/([a-zA-Z0-9]+)', resp.text, re.I)
+                            main_html = resp.text
+                            final_url = str(resp.url)
+
+                            # استخراج العنوان والصورة من الصفحة الأصلية
+                            tm = re.search(r"<title[^>]*>(.*?)</title>", main_html, re.S | re.I)
+                            if tm:
+                                page_title = re.sub(r"\s+", " ", tm.group(1)).strip()
+                                page_title = re.sub(r"\s*-\s*(?:وي سيما|ماي سيما|MYCIMA|WECIMA).*", "", page_title, flags=re.I).strip()
+
+                            og_img = re.search(r"<meta[^>]+(?:property|name)=['\"]og:image['\"][^>]*content=['\"]([^'\"]+)['\"]", main_html, re.I)
+                            if og_img:
+                                page_thumb = og_img.group(1).strip()
+
+                            # جمع روابط الصفحات الفرعية (play.php / embed.php أو أية إطارات)
+                            all_htmls = [main_html]
+                            sub_links = []
+                            if "watch.php" in final_url and "vid=" in final_url:
+                                sub_links.append(final_url.replace("watch.php", "play.php"))
+                                sub_links.append(final_url.replace("watch.php", "embed.php"))
+                            for sm in re.finditer(r"href=['\"]([^'\"]*(?:play|embed)\.php[^'\"]*)['\"]", main_html, re.I):
+                                sub_links.append(urljoin(final_url, sm.group(1)))
+                            for sm in re.finditer(r"<(?:iframe|source)[^>]+src=['\"]([^'\"]+)['\"]", main_html, re.I):
+                                sub_links.append(urljoin(final_url, sm.group(1)))
+                            for sm in re.finditer(r"data-embed=['\"]([^'\"]+)['\"]", main_html, re.I):
+                                sub_links.append(sm.group(1))
+
+                            for sl in set(sub_links[:10]):
+                                m = re.search(r"(?:vidara\.(?:to|so|cc|net)|vidvara\.(?:cc|to|so)|4kvideo\.cc)/(?:v|e)/([a-zA-Z0-9]+)", sl, re.I)
+                                if m:
+                                    break
+                                p_parsed = urlparse(sl)
+                                if p_parsed.netloc == urlparse(final_url).netloc and any(k in sl for k in ("play.php", "embed.php")):
+                                    try:
+                                        r_sub = client.get(sl)
+                                        if r_sub.status_code == 200:
+                                            all_htmls.append(r_sub.text)
+                                            m = re.search(r"(?:vidara\.(?:to|so|cc|net)|vidvara\.(?:cc|to|so)|4kvideo\.cc)/(?:v|e)/([a-zA-Z0-9]+)", r_sub.text, re.I)
+                                            if m:
+                                                break
+                                    except Exception:
+                                        pass
+
+                            if not m:
+                                combined = "\n".join(all_htmls)
+                                m = re.search(r"(?:vidara\.(?:to|so|cc|net)|vidvara\.(?:cc|to|so)|4kvideo\.cc)/(?:v|e)/([a-zA-Z0-9]+)", combined, re.I)
+
+                            # سيرفر Vidmoly كخيار بديل إذا لم يتوفر Vidara
+                            if not m:
+                                combined = "\n".join(all_htmls)
+                                m_moly = re.search(r"https?://(?:www\.)?vidmoly\.(?:net|me|to|biz)/(?:embed-|v/)([a-zA-Z0-9]+)", combined, re.I)
+                                if m_moly:
+                                    moly_url = f"https://vidmoly.biz/embed-{m_moly.group(1)}.html"
+                                    try:
+                                        r_moly = client.get(moly_url, headers=headers)
+                                        m3u8_pat = r"https?://[^\s\"'<>]+" + r"\.m3u8" + r"[^\s\"'<>]*"
+                                        m3u8_m = re.search(m3u8_pat, r_moly.text)
+                                        if m3u8_m:
+                                            return {
+                                                "source": "vidmoly",
+                                                "streaming_url": m3u8_m.group(0),
+                                                "title": page_title or "فيديو",
+                                                "thumbnail": page_thumb or "",
+                                                "referer": "https://vidmoly.biz/"
+                                            }
+                                    except Exception:
+                                        pass
                 except Exception:
                     pass
 
@@ -169,7 +237,7 @@ class UniversalExtractor:
             return None
 
         filecode = m.group(1)
-        target_domains = ["vidvara.cc", "4kvideo.cc", "vidara.to", "vidara.so"]
+        target_domains = ["vidara.to", "vidvara.cc", "4kvideo.cc", "vidara.so"]
         try:
             p_netloc = urlparse(url).netloc.lower()
             for d in target_domains:
@@ -199,8 +267,8 @@ class UniversalExtractor:
                                 "filecode": filecode,
                                 "domain": domain,
                                 "streaming_url": stream_url,
-                                "title": (data.get("title") or "فيديو").strip(),
-                                "thumbnail": data.get("thumbnail") or "",
+                                "title": page_title or (data.get("title") or "فيديو").strip(),
+                                "thumbnail": page_thumb or (data.get("thumbnail") or ""),
                                 "referer": f"https://{domain}/"
                             }
             except Exception:
@@ -520,9 +588,9 @@ class UniversalExtractor:
                             "size": f.get("filesize") or f.get("filesize_approx")
                         })
                 if not formats:
-                    formats = [{"id": "320", "height": 320, "label": "320p / mp4", "size": None}]
+                    formats = [{"id": "720", "height": 720, "label": "720p / mp4", "size": None}]
                 return {
-                    "source": "vidara",
+                    "source": vidara_info.get("source", "vidara"),
                     "title": vidara_info.get("title") or info.get("title"),
                     "thumbnail": vidara_info.get("thumbnail") or info.get("thumbnail"),
                     "duration": info.get("duration"),
@@ -531,11 +599,11 @@ class UniversalExtractor:
                 }
             except Exception:
                 return {
-                    "source": "vidara",
+                    "source": vidara_info.get("source", "vidara"),
                     "title": vidara_info.get("title") or "فيديو",
                     "thumbnail": vidara_info.get("thumbnail") or "",
                     "duration": None,
-                    "formats": [{"id": "320", "height": 320, "label": "320p / mp4", "size": None}],
+                    "formats": [{"id": "720", "height": 720, "label": "720p / mp4", "size": None}],
                     "audio_size": None
                 }
 

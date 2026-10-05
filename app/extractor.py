@@ -144,12 +144,124 @@ class UniversalExtractor:
         except Exception:
             return None
 
+    def _fetch_vidara_info(self, url: str) -> dict | None:
+        """يستخرج معلومات البث المباشر لشبكة Vidara / Vidvara / 4kvideo."""
+        import re, httpx
+        from urllib.parse import urlparse
+
+        m = re.search(r'(?:vidara\.(?:to|so|cc|net)|vidvara\.(?:cc|to|so)|4kvideo\.cc)/(?:v|e)/([a-zA-Z0-9]+)', url, re.I)
+        if not m:
+            u_low = url.lower()
+            if not any(dom in u_low for dom in ("youtube.com", "youtu.be", "instagram.com", "tiktok.com", "x.com", "twitter.com")):
+                try:
+                    headers = {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    }
+                    with httpx.Client(follow_redirects=True, timeout=10.0, headers=headers) as client:
+                        resp = client.get(url)
+                        if resp.status_code == 200:
+                            m = re.search(r'(?:vidara\.(?:to|so|cc|net)|vidvara\.(?:cc|to|so)|4kvideo\.cc)/(?:v|e)/([a-zA-Z0-9]+)', resp.text, re.I)
+                except Exception:
+                    pass
+
+        if not m:
+            return None
+
+        filecode = m.group(1)
+        target_domains = ["vidvara.cc", "4kvideo.cc", "vidara.to", "vidara.so"]
+        try:
+            p_netloc = urlparse(url).netloc.lower()
+            for d in target_domains:
+                if d in p_netloc:
+                    target_domains.remove(d)
+                    target_domains.insert(0, d)
+                    break
+        except Exception:
+            pass
+
+        for domain in target_domains:
+            try:
+                api_url = f"https://{domain}/api/stream"
+                headers = {
+                    "Content-Type": "application/json",
+                    "Referer": f"https://{domain}/e/{filecode}",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+                }
+                payload = {"filecode": filecode, "device": "web", "codecs": []}
+                with httpx.Client(timeout=10.0) as client:
+                    res = client.post(api_url, headers=headers, json=payload)
+                    if res.status_code == 200:
+                        data = res.json()
+                        stream_url = data.get("streaming_url")
+                        if stream_url:
+                            return {
+                                "filecode": filecode,
+                                "domain": domain,
+                                "streaming_url": stream_url,
+                                "title": (data.get("title") or "فيديو").strip(),
+                                "thumbnail": data.get("thumbnail") or "",
+                                "referer": f"https://{domain}/"
+                            }
+            except Exception:
+                continue
+        return None
+
+    def _download_vidara(self, info: dict, outdir: Path, preferred: str = "best") -> dict:
+        import re, subprocess
+        from yt_dlp import YoutubeDL
+
+        safe_title = re.sub(r'[\\/*?:"<>|]', "_", info["title"])[:100].strip() or "video"
+        opts = self._base_ytdlp_opts(outdir, preferred)
+        opts["outtmpl"] = str(outdir / f"{safe_title}.%(ext)s")
+        opts["http_headers"]["Referer"] = info.get("referer", "https://vidvara.cc/")
+        opts["hls_prefer_native"] = True
+        opts["concurrent_fragment_downloads"] = 1
+        opts["socket_timeout"] = 60
+        opts["fragment_retries"] = 10
+        opts["retries"] = 10
+
+        with YoutubeDL(opts) as ydl:
+            res_info = ydl.extract_info(info["streaming_url"], download=True)
+
+        files = [p for p in outdir.iterdir() if p.is_file() and p.name != "photos.json" and not p.name.endswith(".part") and not p.name.endswith(".ytdl")]
+        if not files:
+            raise DownloadError("لم يتم العثور على الملف المحمل")
+
+        path = max(files, key=lambda p: p.stat().st_mtime)
+
+        if preferred != "audio" and path.suffix.lower() == ".mp4":
+            try:
+                fixed_tmp = path.with_suffix(".faststart.tmp")
+                res = subprocess.run(
+                    [ffmpeg_location() or "ffmpeg", "-y", "-v", "error", "-i", str(path),
+                     "-c", "copy", "-movflags", "+faststart", str(fixed_tmp)],
+                    capture_output=True, timeout=120
+                )
+                if res.returncode == 0 and fixed_tmp.is_file() and fixed_tmp.stat().st_size > 1024:
+                    fixed_tmp.replace(path)
+            except Exception:
+                pass
+
+        return {
+            "path": str(path),
+            "ext": path.suffix.lstrip("."),
+            "duration": res_info.get("duration") if res_info else None,
+            "thumbnail": info.get("thumbnail") or (res_info.get("thumbnail") if res_info else ""),
+            "title": info.get("title") or (res_info.get("title") if res_info else "فيديو")
+        }
+
     def download(self, url: str, outdir: Path, preferred: str = "best",
                  title_hint: str = "") -> dict:
         """ينزّل الفيديو — مسار واحد: yt-dlp مع كوكيز (نفس متصفح المستخدم بالضبط)، مع دعم ألبوم صور تيك توك.
         """
         outdir = Path(outdir)
         outdir.mkdir(parents=True, exist_ok=True)
+
+        # 🎬 فحص شبكة Vidara / Vidvara / 4kvideo
+        vidara_info = self._fetch_vidara_info(url)
+        if vidara_info:
+            return self._download_vidara(vidara_info, outdir, preferred)
 
         # 📸 فحص صور تيك توك قبل yt-dlp
         if "tiktok.com" in url.lower():
@@ -385,6 +497,48 @@ class UniversalExtractor:
         ⚠️ الجودات دائمًا حقيقية من المقطع نفسه — ممنوع أي جودات افتراضية/ثابتة.
         الحجم = حجم الفيديو + أفضل تدفق صوتي (تقدير الحجم النهائي للملف المدمج).
         """
+        # 🎬 فحص شبكة Vidara / Vidvara / 4kvideo
+        vidara_info = self._fetch_vidara_info(url)
+        if vidara_info:
+            try:
+                stream_url = vidara_info["streaming_url"]
+                opts = {
+                    "quiet": True, "skip_download": True, "noplaylist": True,
+                    "no_warnings": True, "socket_timeout": 30,
+                    "http_headers": {"Referer": vidara_info.get("referer", "https://vidvara.cc/")}
+                }
+                from yt_dlp import YoutubeDL
+                with YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(stream_url, download=False)
+                formats = []
+                for f in (info.get("formats") or []):
+                    h = f.get("height")
+                    if h:
+                        formats.append({
+                            "id": str(h), "height": h,
+                            "label": f"{h}p / mp4",
+                            "size": f.get("filesize") or f.get("filesize_approx")
+                        })
+                if not formats:
+                    formats = [{"id": "320", "height": 320, "label": "320p / mp4", "size": None}]
+                return {
+                    "source": "vidara",
+                    "title": vidara_info.get("title") or info.get("title"),
+                    "thumbnail": vidara_info.get("thumbnail") or info.get("thumbnail"),
+                    "duration": info.get("duration"),
+                    "formats": formats,
+                    "audio_size": None
+                }
+            except Exception:
+                return {
+                    "source": "vidara",
+                    "title": vidara_info.get("title") or "فيديو",
+                    "thumbnail": vidara_info.get("thumbnail") or "",
+                    "duration": None,
+                    "formats": [{"id": "320", "height": 320, "label": "320p / mp4", "size": None}],
+                    "audio_size": None
+                }
+
         try:
             info = self._ytdlp_info(url)
             raw = info.get("formats") or []

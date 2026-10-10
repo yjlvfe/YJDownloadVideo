@@ -25,7 +25,7 @@ def process_job(job_id):
         db.commit()
     outdir = settings.storage_path / job_id
     outdir.mkdir(exist_ok=True)
-    write_status(job_id, "downloading", 0)
+    write_status(job_id, "connecting", 0, message="جارٍ الاتصال بالسيرفر وجلب المقطع...")
 
     # التقدم يُكتب في status.json فقط — لا مساس بـ SQLite عند كل نبضة
     # (كان commit لكل حدث تقدم ~1/ثانية = تنافس قفل بلا أي فائدة)
@@ -33,17 +33,28 @@ def process_job(job_id):
         if d['status'] == 'downloading':
             total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
             done = d.get('downloaded_bytes') or 0
-            # 🎯 نسبة تقدّم حقيقية: حتى لو الحجم الكلي مجهول، نستخدم النسبة الجزيئية من yt-dlp
-            # أو على الأقل نظهر الـ MB المحمّلة (لا 0% أبدًا — كان يبدو متجمداً)
-            pct_str = (d.get('_percent_str') or '').strip().rstrip('%')
-            try:
-                pct = int(float(pct_str))
-            except (ValueError, TypeError):
-                if total:
-                    pct = max(0, min(100, int(done / total * 100)))
-                else:
-                    pct = 0  # حجم مجهول — سنعرض الـ MB في البوت بدل النسبة
-            write_status(job_id, "downloading", pct, size=done, total=total)
+            speed = d.get('speed') or 0
+            eta = d.get('eta') or 0
+            frag_index = d.get('fragment_index')
+            frag_count = d.get('fragment_count')
+
+            # 🎯 نسبة تقدّم ذكية وسلسة:
+            # 1. إذا كان تحميل أجزاء (HLS / DASH) نعتمد على نسبة الأجزاء المكتملة
+            # 2. إذا كان الحجم الكلي معلوماً، نعتمد على done / total
+            # 3. نضمن ألا يتجمد عند 0% لحظة وصول أول بايت (max 1%)
+            pct = 0
+            if frag_count and frag_index is not None and frag_count > 0:
+                pct = max(1, min(99, int((frag_index + 1) / frag_count * 100)))
+            elif total > 0 and done > 0:
+                pct = max(1, min(99, int(done / total * 100)))
+            else:
+                pct_str = (d.get('_percent_str') or '').strip().rstrip('%')
+                try:
+                    pct = max(1 if done > 0 else 0, min(99, int(float(pct_str))))
+                except (ValueError, TypeError):
+                    pct = 1 if done > 0 else 0
+
+            write_status(job_id, "downloading", pct, size=done, total=total, speed=int(speed), eta=int(eta))
         elif d['status'] in ('finished', 'post-processing'):
             write_status(job_id, "preparing", 100)
 

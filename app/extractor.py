@@ -150,12 +150,24 @@ class UniversalExtractor:
         from urllib.parse import urlparse, urljoin
 
         m = re.search(r'(?:vidara\.(?:to|so|cc|net)|vidvara\.(?:cc|to|so)|4kvideo\.cc)/(?:v|e)/([a-zA-Z0-9]+)', url, re.I)
+        m_direct_vidara = bool(m)
         page_title = ""
         page_thumb = ""
+        combined = ""
 
         if not m:
             u_low = url.lower()
-            if not any(dom in u_low for dom in ("youtube.com", "youtu.be", "instagram.com", "tiktok.com", "x.com", "twitter.com")):
+            # ⚡ استهداف ذكي وفوري: لا نفحص محتوى الصفحات خارج شبكات المشاهدة المعروفة
+            is_social = any(dom in u_low for dom in (
+                "youtube.com", "youtu.be", "instagram.com", "tiktok.com", "x.com", "twitter.com",
+                "facebook.com", "fb.watch", "reddit.com", "pinterest.com", "threads.net", "snapchat.com",
+                "kwai.com", "vimeo.com", "dailymotion.com", "twitch.tv", "soundcloud.com", "bilibili.com"
+            ))
+            is_streaming_portal = (
+                any(kw in u_low for kw in ("cima", "laroza", "faset", "arabseed", "akwam", "egydead", "lodynet", "shahid", "shoof", "almeshkah"))
+                or any(p in u_low for p in ("watch.php", "play.php", "embed", "vid=", "video.php", "view.php"))
+            )
+            if is_streaming_portal and not is_social:
                 try:
                     headers = {
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
@@ -191,24 +203,17 @@ class UniversalExtractor:
                                 sub_links.append(sm.group(1))
 
                             for sl in set(sub_links[:10]):
-                                m = re.search(r"(?:vidara\.(?:to|so|cc|net)|vidvara\.(?:cc|to|so)|4kvideo\.cc)/(?:v|e)/([a-zA-Z0-9]+)", sl, re.I)
-                                if m:
-                                    break
                                 p_parsed = urlparse(sl)
                                 if p_parsed.netloc == urlparse(final_url).netloc and any(k in sl for k in ("play.php", "embed.php")):
                                     try:
                                         r_sub = client.get(sl)
                                         if r_sub.status_code == 200:
                                             all_htmls.append(r_sub.text)
-                                            m = re.search(r"(?:vidara\.(?:to|so|cc|net)|vidvara\.(?:cc|to|so)|4kvideo\.cc)/(?:v|e)/([a-zA-Z0-9]+)", r_sub.text, re.I)
-                                            if m:
-                                                break
                                     except Exception:
                                         pass
 
-                            if not m:
-                                combined = "\n".join(all_htmls)
-                                m = re.search(r"(?:vidara\.(?:to|so|cc|net)|vidvara\.(?:cc|to|so)|4kvideo\.cc)/(?:v|e)/([a-zA-Z0-9]+)", combined, re.I)
+                            combined = "\n".join(all_htmls)
+                            m = re.search(r"(?:vidara\.(?:to|so|cc|net)|vidvara\.(?:cc|to|so)|4kvideo\.cc)/(?:v|e)/([a-zA-Z0-9]+)", combined, re.I)
 
                             # سيرفر Vidmoly كخيار بديل إذا لم يتوفر Vidara
                             if not m:
@@ -263,16 +268,45 @@ class UniversalExtractor:
                         data = res.json()
                         stream_url = data.get("streaming_url")
                         if stream_url:
-                            return {
-                                "filecode": filecode,
-                                "domain": domain,
-                                "streaming_url": stream_url,
-                                "title": page_title or (data.get("title") or "فيديو").strip(),
-                                "thumbnail": page_thumb or (data.get("thumbnail") or ""),
-                                "referer": f"https://{domain}/"
-                            }
+                            # 🛡️ تحقق سريع أن رابط البث شغال وغير محذوف (404)
+                            try:
+                                with httpx.Client(timeout=4.0) as chk:
+                                    chk_r = chk.get(stream_url, headers={"Referer": f"https://{domain}/", "User-Agent": "Mozilla/5.0"})
+                                    if chk_r.status_code == 200:
+                                        return {
+                                            "filecode": filecode,
+                                            "domain": domain,
+                                            "streaming_url": stream_url,
+                                            "title": page_title or (data.get("title") or "فيديو").strip(),
+                                            "thumbnail": page_thumb or (data.get("thumbnail") or ""),
+                                            "referer": f"https://{domain}/"
+                                        }
+                            except Exception:
+                                pass
             except Exception:
                 continue
+
+        # إذا كان سيرفر Vidara محذوفاً (404) وكان هناك سيرفر Vidmoly بديل في الصفحة
+        if not m_direct_vidara and combined:
+            m_moly = re.search(r"https?://(?:www\.)?vidmoly\.(?:net|me|to|biz)/(?:embed-|v/)([a-zA-Z0-9]+)", combined, re.I)
+            if m_moly:
+                try:
+                    moly_url = f"https://vidmoly.biz/embed-{m_moly.group(1)}.html"
+                    headers = {"User-Agent": "Mozilla/5.0"}
+                    with httpx.Client(follow_redirects=True, timeout=8.0, headers=headers) as c:
+                        r_moly = c.get(moly_url)
+                        m3u8s = re.findall(r'https?://[^\s\"\'<>]+\.m3u8[^\s\"\'<>]*', r_moly.text)
+                        if m3u8s:
+                            return {
+                                "source": "vidmoly",
+                                "streaming_url": m3u8s[0],
+                                "title": page_title or "فيديو",
+                                "thumbnail": page_thumb or "",
+                                "referer": "https://vidmoly.biz/"
+                            }
+                except Exception:
+                    pass
+
         return None
 
     def _download_vidara(self, info: dict, outdir: Path, preferred: str = "best") -> dict:
@@ -284,8 +318,8 @@ class UniversalExtractor:
         opts["outtmpl"] = str(outdir / f"{safe_title}.%(ext)s")
         opts["http_headers"]["Referer"] = info.get("referer", "https://vidvara.cc/")
         opts["hls_prefer_native"] = True
-        opts["concurrent_fragment_downloads"] = 8
-        opts["socket_timeout"] = 45
+        opts["concurrent_fragment_downloads"] = 10
+        opts["socket_timeout"] = 35
         opts["fragment_retries"] = 10
         opts["retries"] = 10
 
@@ -331,8 +365,8 @@ class UniversalExtractor:
         if vidara_info:
             return self._download_vidara(vidara_info, outdir, preferred)
 
-        # 📸 فحص صور تيك توك قبل yt-dlp
-        if "tiktok.com" in url.lower():
+        # 📸 فحص صور تيك توك قبل yt-dlp (تخطي الفحص الفوري إذا كان الرابط فيديو صريح /video/ لتسريع التحميل)
+        if "tiktok.com" in url.lower() and ("/photo/" in url.lower() or "/video/" not in url.lower()):
             photo_info = self._fetch_tiktok_photos_info(url)
             if photo_info and photo_info.get("images"):
                 import httpx, json
@@ -697,9 +731,14 @@ class UniversalExtractor:
             "http_headers": _ytdlp_headers(),
             "format_sort": ["res", "ext:mp4:m4a", "vcodec:h264"],
             "ffmpeg_location": ffmpeg_location(),
-            # 🚀 تسريع: 16 اتصال متوازي للأجزاء (يكسر خنق يوتيوب لـ IP السيرفرات)
-            # يوتيوب يخنق كل اتصال مفرد ~3MB/s → 16 اتصال = حتى ~50MB/s
+            # 🚀 تسريع التحميل المتوازي والأداء الأقصى عبر كافة المواقع
             "concurrent_fragment_downloads": 16,
+            "hls_prefer_native": True,
+            "buffersize": 1024 * 256,
+            "http_chunk_size": 10485760,
+            "js_runtimes": {"quickjs": {}},
+            "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+            "postprocessor_args": {"Merger": ["-movflags", "+faststart"]},
         }
         # تمكين انتحال بصمة المتصفح لتجاوز حظر الـ 403 / Cloudflare في المواقع العامة
         try:
@@ -728,8 +767,10 @@ class UniversalExtractor:
         clean_url = _clean_youtube_url(url) if self._is_youtube(url) else url
         opts = {
             "quiet": True, "skip_download": True, "noplaylist": True,
-            "no_warnings": True, "socket_timeout": 30,
+            "no_warnings": True, "socket_timeout": 20,
             "http_headers": _ytdlp_headers(),
+            "js_runtimes": {"quickjs": {}},
+            "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
         }
         try:
             from yt_dlp.networking.impersonate import ImpersonateTarget

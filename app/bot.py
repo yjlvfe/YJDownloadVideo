@@ -725,12 +725,10 @@ async def watch_and_deliver(chat_id: int, jid: str, status_msg=None):
         bar = None
         if status_msg is not None:
             # نفس رسالة الأزرار تتحول لشريط الحالة
-            bar = await _edit_progress(status_msg,
-                                       f"⬇️ {_progress_bar(0)} 0% — جارٍ التحميل")
+            bar = await _edit_progress(status_msg, "⚡ جارٍ الاتصال بالسيرفر وفحص المقطع...")
         if bar is None:
             try:
-                bar = await bot.send_message(chat_id,
-                                             f"⬇️ {_progress_bar(0)} 0% — جارٍ التحميل")
+                bar = await bot.send_message(chat_id, "⚡ جارٍ الاتصال بالسيرفر وفحص المقطع...")
             except Exception:  # noqa: BLE001
                 pass
 
@@ -742,11 +740,14 @@ async def watch_and_deliver(chat_id: int, jid: str, status_msg=None):
                 j = db.get(Job, jid)
                 state = j.status if j else "failed"
             if state in ("waiting",):
-                # في انتظار الـ worker (أجزاء من الثانية) — نعرض التحميل فورًا
-                text = f"⬇️ {_progress_bar(0)} 0% — جارٍ التحميل"
+                # في انتظار الـ worker (أجزاء من الثانية)
+                text = "⚡ في انتظار بدء المهمة..."
             elif state in ("downloading", "preparing"):
                 st = read_status(jid) or {}
-                if st.get("stage") == "preparing":
+                stage = st.get("stage", "downloading")
+                if stage == "connecting":
+                    text = "⚡ جارٍ الاتصال بالموقع وتجهيز المقطع..."
+                elif stage == "preparing":
                     # ⚙️ تجهيز = دمج ffmpeg — يُقدّر الوقت من حجم الملف وسرعة HDD (~40MB/s)
                     import time
                     now = time.monotonic()
@@ -767,13 +768,18 @@ async def watch_and_deliver(chat_id: int, jid: str, status_msg=None):
                     pct = st.get("pct", 0)
                     total = st.get("total", 0)
                     size = st.get("size", 0)
+                    speed = st.get("speed", 0)
+                    speed_str = f" · {_fmt_mb(speed)}/s" if speed > 0 else ""
                     if pct > 0:
-                        text = f"⬇️ {_progress_bar(pct)} {pct}% — جارٍ التحميل"
-                    elif total == 0 and size > 0:
-                        # حجم كلي مجهول: أظهر MB المحمّلة بدل 0% المتجمد
-                        text = f"⬇️ {_fmt_mb(size)} محمّلة — جارٍ التحميل"
+                        if total > 0 and size > 0:
+                            text = f"⬇️ {_progress_bar(pct)} {pct}% ({_fmt_mb(size)} / {_fmt_mb(total)}){speed_str}"
+                        else:
+                            text = f"⬇️ {_progress_bar(pct)} {pct}%{speed_str} — جارٍ التحميل"
+                    elif size > 0:
+                        # حجم كلي مجهول: أظهر MB المحمّلة وسرعة التحميل الحالية
+                        text = f"⬇️ {_fmt_mb(size)} محمّلة{speed_str} — جارٍ التحميل"
                     else:
-                        text = f"⬇️ {_progress_bar(pct)} {pct}% — جارٍ التحميل"
+                        text = f"⬇️ {_progress_bar(0)} 0%{speed_str} — جارٍ التحميل"
             else:
                 break
             if text != last_text and bar is not None:

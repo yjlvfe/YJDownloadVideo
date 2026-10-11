@@ -31,7 +31,8 @@ def process_job(job_id):
     # (كان commit لكل حدث تقدم ~1/ثانية = تنافس قفل بلا أي فائدة)
     def hook(d):
         if d['status'] == 'downloading':
-            total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
+            # الحجم الكلي المؤكد فقط من Content-Length الحقيقي — لا نستخدم التقدير المتذبذب للبثوث
+            total = d.get('total_bytes') or 0
             done = d.get('downloaded_bytes') or 0
             speed = d.get('speed') or 0
             eta = d.get('eta') or 0

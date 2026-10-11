@@ -25,6 +25,7 @@ for c in "${CONTAINERS[@]}"; do
     for f in "${FILES[@]}"; do
       [ -f "$f" ] && docker cp "$f" "$c:/app/$f"
     done
+    docker exec "$c" ln -sf /usr/bin/qjs /usr/bin/quickjs 2>/dev/null || true
     docker restart "$c"
     echo "✅ $c محدّث"
   fi

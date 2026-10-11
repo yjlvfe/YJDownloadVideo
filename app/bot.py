@@ -772,7 +772,11 @@ async def watch_and_deliver(chat_id: int, jid: str, status_msg=None):
                     speed_str = f" · {_fmt_mb(speed)}/s" if speed > 0 else ""
                     if pct > 0:
                         if total > 0 and size > 0:
+                            # حجم كلي حقيقي ومؤكد (يوتيوب، تيك توك، ملفات MP4 المباشرة)
                             text = f"⬇️ {_progress_bar(pct)} {pct}% ({_fmt_mb(size)} / {_fmt_mb(total)}){speed_str}"
+                        elif size > 0:
+                            # بثوث HLS والتدفقات المباشرة: إظهار نسبة التقدم والميجابايت المحملة الحقيقية بثبات دون تذبذب الحجم التقديري
+                            text = f"⬇️ {_progress_bar(pct)} {pct}% ({_fmt_mb(size)}){speed_str}"
                         else:
                             text = f"⬇️ {_progress_bar(pct)} {pct}%{speed_str} — جارٍ التحميل"
                     elif size > 0:

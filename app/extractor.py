@@ -309,6 +309,186 @@ class UniversalExtractor:
 
         return None
 
+    def _fetch_animotv_info(self, url: str) -> dict | None:
+        """يستخرج معلومات البث المباشر لمواقع الأنمي المدعومة (Animotvslash / Vidnest)."""
+        import re, httpx, base64, hashlib, secrets, json
+
+        u_low = url.lower()
+        is_animotv = any(k in u_low for k in ("animotv", "animotvslash", "vidnest.fun", "megaplay.buzz", "tryembed"))
+        if not is_animotv:
+            return None
+
+        secret_key = "M0th3rFuk3rG4yB4st4rd_wSnX7qV9kL2pR8yQm4zN1Fg"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
+
+        anilist_id = None
+        episode_num = None
+        sub_or_dub = "sub"
+        title = "anime"
+        thumb = ""
+
+        # فحص مباشر لمعاملات الرابط
+        m_direct = re.search(r'(?:anime|watch|animepahe)/(\d+)/(\d+)(?:/([a-zA-Z]+))?', url)
+        if m_direct:
+            anilist_id = m_direct.group(1)
+            episode_num = m_direct.group(2)
+            if m_direct.group(3):
+                sub_or_dub = m_direct.group(3).lower()
+
+        try:
+            with httpx.Client(follow_redirects=True, timeout=12.0, headers=headers) as client:
+                resp = client.get(url)
+                if resp.status_code == 200:
+                    html = resp.text
+                    tm = re.search(r"<title[^>]*>(.*?)</title>", html, re.I)
+                    if tm:
+                        title = re.sub(r"\s+", " ", tm.group(1)).replace("- ANIMOTVSLASH", "").strip()[:100]
+
+                    og_img = re.search(r'<meta[^>]+property=[\'"]og:image[\'"][^>]*content=[\'"]([^\'"]+)[\'"]', html, re.I)
+                    if og_img:
+                        thumb = og_img.group(1).strip()
+
+                    if not anilist_id or not episode_num:
+                        m_frame = re.search(r'watch/(\d+)/(\d+)(?:\?lang=([a-zA-Z]+))?', html)
+                        if m_frame:
+                            anilist_id = m_frame.group(1)
+                            episode_num = m_frame.group(2)
+                            if m_frame.group(3):
+                                sub_or_dub = m_frame.group(3).lower()
+
+                    if not anilist_id or not episode_num:
+                        for opt in re.findall(r'value=[\'"]([A-Za-z0-9+/=]{20,})[\'"]', html):
+                            try:
+                                decoded = base64.b64decode(opt).decode('utf-8', errors='ignore')
+                                sm = re.search(r'(?:anime|watch|animepahe)/(\d+)/(\d+)(?:/([a-zA-Z]+))?', decoded)
+                                if sm:
+                                    anilist_id = sm.group(1)
+                                    episode_num = sm.group(2)
+                                    if sm.group(3):
+                                        sub_or_dub = sm.group(3).lower()
+                                    break
+                            except Exception:
+                                pass
+
+                    if not anilist_id or not episode_num:
+                        ep_m = re.search(r'episode-(\d+)', url)
+                        an_m = re.search(r'anilist[^\d]*(\d{5,7})', html)
+                        if ep_m and an_m:
+                            episode_num = ep_m.group(1)
+                            anilist_id = an_m.group(1)
+        except Exception:
+            pass
+
+        if not anilist_id or not episode_num:
+            return None
+
+        try:
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        except ImportError:
+            return None
+
+        rand_bytes = secrets.token_bytes(16)
+        nonce_str = base64.urlsafe_b64encode(rand_bytes).decode().rstrip("=")
+
+        api_headers = {
+            "User-Agent": headers["User-Agent"],
+            "Referer": f"https://vidnest.fun/anime/{anilist_id}/{episode_num}/{sub_or_dub}",
+            "Origin": "https://vidnest.fun",
+            "Accept": "application/json, text/plain, */*",
+        }
+
+        eM = "https://new.vidnest.fun"
+        endpoints = [
+            f"{eM}/hianime/anime/{anilist_id}/{episode_num}/{sub_or_dub}/hd-2?_n={nonce_str}",
+            f"{eM}/animehub/{anilist_id}/{episode_num}/{sub_or_dub}?_n={nonce_str}",
+            f"{eM}/aniwave_hls/{anilist_id}/{episode_num}/{sub_or_dub}?_n={nonce_str}",
+        ]
+
+        try:
+            with httpx.Client(follow_redirects=True, timeout=12.0, headers=api_headers) as client:
+                for ep_url in endpoints:
+                    try:
+                        resp = client.get(ep_url)
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            if data.get("v") == 2 and "d" in data and "n" in data:
+                                nonce = data["n"]
+                                raw_d = data["d"]
+                                key_material = f"{nonce}|{secret_key}".encode("utf-8")
+                                key = hashlib.sha256(key_material).digest()
+                                pad = len(raw_d) % 4
+                                if pad:
+                                    raw_d += "=" * (4 - pad)
+                                ciphertext_bytes = base64.urlsafe_b64decode(raw_d)
+                                iv = ciphertext_bytes[:12]
+                                ct = ciphertext_bytes[12:]
+                                aesgcm = AESGCM(key)
+                                decrypted = aesgcm.decrypt(iv, ct, None)
+                                res_json = json.loads(decrypted.decode("utf-8"))
+                                sources = res_json.get("sources") or []
+                                for s in sources:
+                                    if s.get("file"):
+                                        return {
+                                            "source": "animotv",
+                                            "streaming_url": s["file"],
+                                            "title": title or "أنمي",
+                                            "thumbnail": thumb,
+                                            "referer": "https://megaplay.buzz/"
+                                        }
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+        return None
+
+    def _download_animotv(self, info: dict, outdir: Path, preferred: str = "best") -> dict:
+        import re, subprocess
+        from yt_dlp import YoutubeDL
+
+        safe_title = re.sub(r'[\\/*?:"<>|]', "_", info["title"])[:100].strip() or "video"
+        opts = self._base_ytdlp_opts(outdir, preferred)
+        opts["outtmpl"] = str(outdir / f"{safe_title}.%(ext)s")
+        opts["http_headers"]["Referer"] = info.get("referer", "https://megaplay.buzz/")
+        opts["hls_prefer_native"] = True
+        opts["concurrent_fragment_downloads"] = 12
+        opts["socket_timeout"] = 35
+        opts["fragment_retries"] = 10
+        opts["retries"] = 10
+
+        with YoutubeDL(opts) as ydl:
+            res_info = ydl.extract_info(info["streaming_url"], download=True)
+
+        files = [p for p in outdir.iterdir() if p.is_file() and p.name != "photos.json" and not p.name.endswith(".part") and not p.name.endswith(".ytdl")]
+        if not files:
+            raise DownloadError("لم يتم العثور على الملف المحمل")
+
+        path = max(files, key=lambda p: p.stat().st_mtime)
+
+        if preferred != "audio" and path.suffix.lower() == ".mp4":
+            try:
+                fixed_tmp = path.with_suffix(".faststart.tmp")
+                res = subprocess.run(
+                    [ffmpeg_location() or "ffmpeg", "-y", "-v", "error", "-i", str(path),
+                     "-c", "copy", "-movflags", "+faststart", str(fixed_tmp)],
+                    capture_output=True, timeout=120
+                )
+                if res.returncode == 0 and fixed_tmp.is_file() and fixed_tmp.stat().st_size > 1024:
+                    fixed_tmp.replace(path)
+            except Exception:
+                pass
+
+        return {
+            "path": str(path),
+            "ext": path.suffix.lstrip("."),
+            "duration": res_info.get("duration") if res_info else None,
+            "thumbnail": info.get("thumbnail") or (res_info.get("thumbnail") if res_info else ""),
+            "title": info.get("title") or (res_info.get("title") if res_info else "أنمي")
+        }
+
     def _download_vidara(self, info: dict, outdir: Path, preferred: str = "best") -> dict:
         import re, subprocess
         from yt_dlp import YoutubeDL
@@ -364,6 +544,11 @@ class UniversalExtractor:
         vidara_info = self._fetch_vidara_info(url)
         if vidara_info:
             return self._download_vidara(vidara_info, outdir, preferred)
+
+        # 🎬 فحص مواقع الأنمي (Animotvslash / Vidnest)
+        animotv_info = self._fetch_animotv_info(url)
+        if animotv_info:
+            return self._download_animotv(animotv_info, outdir, preferred)
 
         # 📸 فحص صور تيك توك قبل yt-dlp (تخطي الفحص الفوري إذا كان الرابط فيديو صريح /video/ لتسريع التحميل)
         if "tiktok.com" in url.lower() and ("/photo/" in url.lower() or "/video/" not in url.lower()):
@@ -641,6 +826,48 @@ class UniversalExtractor:
                     "audio_size": None
                 }
 
+        # 🎬 فحص شبكات الأنمي (Animotvslash / Vidnest)
+        animotv_info = self._fetch_animotv_info(url)
+        if animotv_info:
+            try:
+                stream_url = animotv_info["streaming_url"]
+                opts = {
+                    "quiet": True, "skip_download": True, "noplaylist": True,
+                    "no_warnings": True, "socket_timeout": 30,
+                    "http_headers": {"Referer": animotv_info.get("referer", "https://megaplay.buzz/")}
+                }
+                from yt_dlp import YoutubeDL
+                with YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(stream_url, download=False)
+                formats = []
+                for f in (info.get("formats") or []):
+                    h = f.get("height")
+                    if h:
+                        formats.append({
+                            "id": str(h), "height": h,
+                            "label": f"{h}p / mp4",
+                            "size": f.get("filesize") or f.get("filesize_approx")
+                        })
+                if not formats:
+                    formats = [{"id": "1080", "height": 1080, "label": "1080p / mp4", "size": None}]
+                return {
+                    "source": "animotv",
+                    "title": animotv_info.get("title") or (info.get("title") if info else "أنمي"),
+                    "thumbnail": animotv_info.get("thumbnail") or (info.get("thumbnail") if info else ""),
+                    "duration": info.get("duration") if info else None,
+                    "formats": formats,
+                    "audio_size": None
+                }
+            except Exception:
+                return {
+                    "source": "animotv",
+                    "title": animotv_info.get("title") or "أنمي",
+                    "thumbnail": animotv_info.get("thumbnail") or "",
+                    "duration": None,
+                    "formats": [{"id": "1080", "height": 1080, "label": "1080p / mp4", "size": None}],
+                    "audio_size": None
+                }
+
         try:
             info = self._ytdlp_info(url)
             raw = info.get("formats") or []
@@ -739,6 +966,8 @@ class UniversalExtractor:
             "js_runtimes": {"quickjs": {}},
             "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
             "postprocessor_args": {"Merger": ["-movflags", "+faststart"]},
+            "geo_bypass": True,
+            "geo_bypass_country": "AE",
         }
         # تمكين انتحال بصمة المتصفح لتجاوز حظر الـ 403 / Cloudflare في المواقع العامة
         try:
@@ -771,6 +1000,8 @@ class UniversalExtractor:
             "http_headers": _ytdlp_headers(),
             "js_runtimes": {"quickjs": {}},
             "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+            "geo_bypass": True,
+            "geo_bypass_country": "AE",
         }
         try:
             from yt_dlp.networking.impersonate import ImpersonateTarget

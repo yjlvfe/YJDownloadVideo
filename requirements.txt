@@ -13,3 +13,4 @@ python-dotenv==1.2.3
 itsdangerous==2.2.0
 websockets==17.1
 imageio-ffmpeg==0.6.0
+cryptography>=42.0.0

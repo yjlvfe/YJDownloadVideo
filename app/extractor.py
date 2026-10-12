@@ -884,6 +884,8 @@ class UniversalExtractor:
                 if f.get("vcodec") == "none" or not f.get("height"):
                     continue
                 size = f.get("filesize") or f.get("filesize_approx")
+                if not size and f.get("tbr") and info.get("duration"):
+                    size = int(f["tbr"] * 1000 / 8 * info["duration"])
                 has_audio = f.get("acodec") not in (None, "none")
                 est = size
                 if size and not has_audio and audio_size:
@@ -964,7 +966,6 @@ class UniversalExtractor:
             "buffersize": 1024 * 256,
             "http_chunk_size": 10485760,
             "js_runtimes": {"quickjs": {}},
-            "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
             "postprocessor_args": {"Merger": ["-movflags", "+faststart"]},
             "geo_bypass": True,
             "geo_bypass_country": "AE",
@@ -999,7 +1000,6 @@ class UniversalExtractor:
             "no_warnings": True, "socket_timeout": 20,
             "http_headers": _ytdlp_headers(),
             "js_runtimes": {"quickjs": {}},
-            "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
             "geo_bypass": True,
             "geo_bypass_country": "AE",
         }
@@ -1043,13 +1043,14 @@ class UniversalExtractor:
 
     def _download_ytdlp(self, url: str, outdir: Path, preferred: str) -> dict:
         from yt_dlp import YoutubeDL
+        clean_url = _clean_youtube_url(url) if self._is_youtube(url) else url
         # محاولة أساسية + إعادتان لنفس الطلب حرفيًا عند الأخطاء الشبكية اللحظية فقط
         opts = self._base_ytdlp_opts(outdir, preferred)
         last_err: Exception | None = None
         for attempt in range(3):
             try:
                 with YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(url, download=True)
+                    info = ydl.extract_info(clean_url, download=True)
                 break
             except Exception as e:  # noqa: BLE001
                 last_err = e

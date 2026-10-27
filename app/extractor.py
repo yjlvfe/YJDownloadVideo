@@ -71,6 +71,34 @@ def _clean_youtube_url(url: str) -> str:
     if m:
         return f"https://www.youtube.com/watch?v={m.group(1)}"
     return url
+
+
+def _unpack_dean_edwards(payload: str) -> str:
+    """فك تشفير كود جافاسكريبت المضغوط بـ Dean Edwards Packer (eval(function(p,a,c,k,e,d)...))."""
+    import re
+    pattern = r"}\s*\(\s*(['\"].*?['\"])\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(['\"].*?['\"])\.split\(['\"]\|['\"]\)"
+    match = re.search(pattern, payload, re.DOTALL)
+    if not match:
+        return ""
+    p = match.group(1)[1:-1]
+    a = int(match.group(2))
+    c = int(match.group(3))
+    k = match.group(4)[1:-1].split('|')
+
+    def to_base36(n: int) -> str:
+        digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+        res = ""
+        while n > 0:
+            res = digits[n % 36] + res
+            n //= 36
+        return res or "0"
+
+    while c > 0:
+        c -= 1
+        word = to_base36(c)
+        val = k[c] if c < len(k) and k[c] else word
+        p = re.sub(r"\b" + re.escape(word) + r"\b", val, p)
+    return p
 class UniversalExtractor:
     """المحرك الشامل: أي رابط ← فيديو ← ملف."""
 
@@ -164,7 +192,7 @@ class UniversalExtractor:
                 "kwai.com", "vimeo.com", "dailymotion.com", "twitch.tv", "soundcloud.com", "bilibili.com"
             ))
             is_streaming_portal = (
-                any(kw in u_low for kw in ("cima", "laroza", "faset", "arabseed", "akwam", "egydead", "lodynet", "shahid", "shoof", "almeshkah"))
+                any(kw in u_low for kw in ("cima", "laroza", "larozza", "faset", "arabseed", "akwam", "egydead", "lodynet", "shahid", "shoof", "almeshkah"))
                 or any(p in u_low for p in ("watch.php", "play.php", "embed", "vid=", "video.php", "view.php"))
             )
             if is_streaming_portal and not is_social:
@@ -192,9 +220,11 @@ class UniversalExtractor:
                             # جمع روابط الصفحات الفرعية (play.php / embed.php أو أية إطارات)
                             all_htmls = [main_html]
                             sub_links = []
-                            if "watch.php" in final_url and "vid=" in final_url:
-                                sub_links.append(final_url.replace("watch.php", "play.php"))
-                                sub_links.append(final_url.replace("watch.php", "embed.php"))
+                            if any(k in final_url for k in ("watch.php", "video.php", "view.php")) and "vid=" in final_url:
+                                for page_type in ("play.php", "embed.php", "watch.php", "video.php"):
+                                    for orig_type in ("watch.php", "video.php", "view.php", "play.php", "embed.php"):
+                                        if orig_type in final_url:
+                                            sub_links.append(final_url.replace(orig_type, page_type))
                             for sm in re.finditer(r"href=['\"]([^'\"]*(?:play|embed)\.php[^'\"]*)['\"]", main_html, re.I):
                                 sub_links.append(urljoin(final_url, sm.group(1)))
                             for sm in re.finditer(r"<(?:iframe|source)[^>]+src=['\"]([^'\"]+)['\"]", main_html, re.I):
@@ -202,13 +232,23 @@ class UniversalExtractor:
                             for sm in re.finditer(r"data-embed=['\"]([^'\"]+)['\"]", main_html, re.I):
                                 sub_links.append(sm.group(1))
 
-                            for sl in set(sub_links[:10]):
+                            for sl in set(sub_links[:15]):
                                 p_parsed = urlparse(sl)
-                                if p_parsed.netloc == urlparse(final_url).netloc and any(k in sl for k in ("play.php", "embed.php")):
+                                if p_parsed.netloc == urlparse(final_url).netloc and any(k in sl for k in ("play.php", "embed.php", "video.php", "watch.php")):
                                     try:
                                         r_sub = client.get(sl)
                                         if r_sub.status_code == 200:
                                             all_htmls.append(r_sub.text)
+                                            # تتبع أية iframes بداخل الصفحات الفرعية
+                                            for ifr in re.findall(r"<(?:iframe|source)[^>]+src=['\"]([^'\"]+)['\"]", r_sub.text, re.I):
+                                                ifr_url = urljoin(sl, ifr)
+                                                if ifr_url not in sub_links:
+                                                    try:
+                                                        r_ifr = client.get(ifr_url, headers={"Referer": sl, "User-Agent": headers["User-Agent"]})
+                                                        if r_ifr.status_code == 200:
+                                                            all_htmls.append(r_ifr.text)
+                                                    except Exception:
+                                                        pass
                                     except Exception:
                                         pass
 
@@ -218,6 +258,26 @@ class UniversalExtractor:
                             # سيرفر Vidmoly كخيار بديل إذا لم يتوفر Vidara
                             if not m:
                                 combined = "\n".join(all_htmls)
+                                # 1. فحص سيرفرات JWPlayer / Dean Edwards Packer (مثل سيرفرات Laroza/OKHD/okprimeone)
+                                for packed_chunk in re.findall(r"eval\(function\(p,a,c,k,e,d\)\{.*?return p;?\}\(.*?\)\)", combined, re.DOTALL):
+                                    try:
+                                        unpacked_text = _unpack_dean_edwards(packed_chunk)
+                                        m3u8_matches = re.findall(r"https?://[^\s\"'<>]+\.m3u8[^\s\"'<>]*", unpacked_text)
+                                        if m3u8_matches:
+                                            # استخراج الصورة من الكود المفكوك إن وجدت
+                                            img_m = re.search(r"image\s*:\s*[\"']([^\"']+)[\"']", unpacked_text)
+                                            thumb = img_m.group(1) if img_m else page_thumb
+                                            return {
+                                                "source": "jwplayer_packed",
+                                                "streaming_url": m3u8_matches[0],
+                                                "title": page_title or "فيديو",
+                                                "thumbnail": thumb or "",
+                                                "referer": final_url
+                                            }
+                                    except Exception:
+                                        pass
+
+                                # 2. فحص سيرفر Vidmoly
                                 m_moly = re.search(r"https?://(?:www\.)?vidmoly\.(?:net|me|to|biz)/(?:embed-|v/)([a-zA-Z0-9]+)", combined, re.I)
                                 if m_moly:
                                     moly_url = f"https://vidmoly.biz/embed-{m_moly.group(1)}.html"
@@ -286,8 +346,25 @@ class UniversalExtractor:
             except Exception:
                 continue
 
-        # إذا كان سيرفر Vidara محذوفاً (404) وكان هناك سيرفر Vidmoly بديل في الصفحة
+        # إذا كان سيرفر Vidara محذوفاً (404) وكان هناك سيرفر Vidmoly أو سيرفر مدمج بديل في الصفحة
         if not m_direct_vidara and combined:
+            for packed_chunk in re.findall(r"eval\(function\(p,a,c,k,e,d\)\{.*?return p;?\}\(.*?\)\)", combined, re.DOTALL):
+                try:
+                    unpacked_text = _unpack_dean_edwards(packed_chunk)
+                    m3u8_matches = re.findall(r"https?://[^\s\"'<>]+\.m3u8[^\s\"'<>]*", unpacked_text)
+                    if m3u8_matches:
+                        img_m = re.search(r"image\s*:\s*[\"']([^\"']+)[\"']", unpacked_text)
+                        thumb = img_m.group(1) if img_m else page_thumb
+                        return {
+                            "source": "jwplayer_packed",
+                            "streaming_url": m3u8_matches[0],
+                            "title": page_title or "فيديو",
+                            "thumbnail": thumb or "",
+                            "referer": url
+                        }
+                except Exception:
+                    pass
+
             m_moly = re.search(r"https?://(?:www\.)?vidmoly\.(?:net|me|to|biz)/(?:embed-|v/)([a-zA-Z0-9]+)", combined, re.I)
             if m_moly:
                 try:

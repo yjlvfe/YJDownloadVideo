@@ -5,7 +5,7 @@ services:
   # الاختيار تلقائي: CONNECT=Germany يتصل بأفضل سيرفر (أقل حمل) في ألمانيا.
   # التبديل اليدوي/التلقائي: سكربت الهوست rotate-vpn.sh عبر docker exec.
   nordvpn:
-    image: ghcr.io/bubuntux/nordvpn@sha256:ac521b5a8d1387780d812a0ed46dd23aa3ee5e47d6d9f9eace39213ea1f56509
+    image: cryptovpn-nordvpn:modern
     restart: unless-stopped
     cap_add:
       - NET_ADMIN
@@ -46,6 +46,7 @@ services:
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-proxy-headers
     restart: unless-stopped
     volumes:
+      - ./app:/app/app
       - ./data:/app/data
       - ./storage:/app/storage
     depends_on:
@@ -60,6 +61,7 @@ services:
     command: python -m app.worker
     restart: unless-stopped
     volumes:
+      - ./app:/app/app
       - ./data:/app/data
       - ./storage:/app/storage
     depends_on:
@@ -76,6 +78,7 @@ services:
     command: python -m app.bot
     restart: unless-stopped
     volumes:
+      - ./app:/app/app
       - ./data:/app/data
       - ./storage:/app/storage
       - /opt/vpn-ctl:/app/vpn-ctl
@@ -91,6 +94,7 @@ services:
     command: python -m app.cleanup
     restart: unless-stopped
     volumes:
+      - ./app:/app/app
       - ./data:/app/data
       - ./storage:/app/storage
     depends_on:

@@ -1047,12 +1047,8 @@ class UniversalExtractor:
             "geo_bypass": True,
             "geo_bypass_country": "AE",
         }
-        # تمكين انتحال بصمة المتصفح لتجاوز حظر الـ 403 / Cloudflare في المواقع العامة
-        try:
-            from yt_dlp.networking.impersonate import ImpersonateTarget
-            opts["impersonate"] = ImpersonateTarget.from_str("chrome")
-        except Exception:
-            pass
+        # لا نضع impersonate افتراضياً لجميع المواقع لأن خوادم HLS/CDN (مثل phncdn وبعض سيرفرات البث)
+        # تفشل عند التعامل مع curl_cffi/impersonate وتعيد استجابات فارغة (The downloaded file is empty)
         if self.cookies_file:
             opts["cookiefile"] = self.cookies_file
         if getattr(settings, "ytdlp_proxy", ""):
@@ -1080,11 +1076,6 @@ class UniversalExtractor:
             "geo_bypass": True,
             "geo_bypass_country": "AE",
         }
-        try:
-            from yt_dlp.networking.impersonate import ImpersonateTarget
-            opts["impersonate"] = ImpersonateTarget.from_str("chrome")
-        except Exception:
-            pass
         if getattr(settings, "ytdlp_proxy", ""):
             opts["proxy"] = settings.ytdlp_proxy
         if self.cookies_file:

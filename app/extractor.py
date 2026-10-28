@@ -621,12 +621,32 @@ class UniversalExtractor:
         # 🎬 فحص شبكة Vidara / Vidvara / 4kvideo
         vidara_info = self._fetch_vidara_info(url)
         if vidara_info:
-            return self._download_vidara(vidara_info, outdir, preferred)
+            last_err = None
+            for attempt in range(3):
+                try:
+                    return self._download_vidara(vidara_info, outdir, preferred)
+                except Exception as e:
+                    last_err = e
+                    if attempt < 2 and _is_transient_error(e):
+                        time.sleep(2)
+                        continue
+                    raise
+            raise DownloadError(f"التحميل فشل بعد 3 محاولات: {str(last_err)[:200]}")
 
         # 🎬 فحص مواقع الأنمي (Animotvslash / Vidnest)
         animotv_info = self._fetch_animotv_info(url)
         if animotv_info:
-            return self._download_animotv(animotv_info, outdir, preferred)
+            last_err = None
+            for attempt in range(3):
+                try:
+                    return self._download_animotv(animotv_info, outdir, preferred)
+                except Exception as e:
+                    last_err = e
+                    if attempt < 2 and _is_transient_error(e):
+                        time.sleep(2)
+                        continue
+                    raise
+            raise DownloadError(f"التحميل فشل بعد 3 محاولات: {str(last_err)[:200]}")
 
         # 📸 فحص صور تيك توك قبل yt-dlp (تخطي الفحص الفوري إذا كان الرابط فيديو صريح /video/ لتسريع التحميل)
         if "tiktok.com" in url.lower() and ("/photo/" in url.lower() or "/video/" not in url.lower()):

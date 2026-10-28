@@ -49,7 +49,7 @@ SECRET_KEY=<قيمة عشوائية طويلة>
 docker compose --env-file .env up -d --build --remove-orphans
 ```
 
-هذا ربط HTTP proxy لتنزيلات yt-dlp، وليس ضماناً أن كل اتصال صادر (مثل Telegram أو أي عميل HTTP آخر) يمر بالنفق. Redis وBot API يبقيان على الشبكة الداخلية. تم اختبار stop/start للمشروع وعودة `warp=on`؛ لم تتم إعادة تشغيل السيرفر نفسه.
+هذا ربط HTTP proxy لتنزيلات yt-dlp فقط. رفع الملفات إلى Telegram يمر عبر Bot API المحلي `http://tba:8081` باستخدام HTTPX مع `trust_env=False`، أي عبر شبكة VPS المباشرة وليس WARP. Redis وBot API يبقيان على الشبكة الداخلية. تم اختبار stop/start للمشروع وعودة `warp=on`؛ لم تتم إعادة تشغيل السيرفر نفسه.
 
 ### NordVPN احتياطي — بطلب صريح فقط
 

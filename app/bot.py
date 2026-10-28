@@ -201,7 +201,7 @@ async def _create_job(user_id: int, chat_id: int, url: str, fmt: str, context,
         db.add(job)
         db.commit()
         jid = job.id
-        queued = active >= settings.max_active_jobs_per_telegram_user
+        queued = settings.max_active_jobs_per_telegram_user > 0 and active >= settings.max_active_jobs_per_telegram_user
     # لا رسائل تأكيد منفصلة — رسالة الحالة الواحدة تتكفل بكل شيء.
     if queued and status_msg:
         try:

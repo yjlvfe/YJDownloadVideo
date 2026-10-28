@@ -23,6 +23,8 @@ Multi-platform social media video and media download service backed by Docker an
 - **Rollback to NordVPN:** `docker compose down --remove-orphans`, then `docker compose -f docker-compose.nordvpn.yml --env-file .env up -d --build --remove-orphans`; verify `nordvpn status` and service health before reporting rollback.
 - Container isolation: traffic for YJ is routed through the dedicated WARP container/proxy; do not bind proxy host-wide.
 - Never modify `.env` tokens without rotating dependent platform webhooks.
+- Download routing is split: yt-dlp uses `YTDLP_PROXY=http://warp:9002`; Telegram upload uses the local Bot API `http://tba:8081` with `ProgressHTTPXRequest(trust_env=False)`, so upload stays on direct VPS egress and never inherits the download proxy.
+- Queue admission is unlimited (`MAX_ACTIVE_JOBS_PER_IP=0`, `MAX_ACTIVE_JOBS_PER_TELEGRAM_USER=0`); the worker execution pool remains bounded to protect the single WARP egress. Forty requests are accepted into Redis and processed FIFO, not rejected at intake.
 - Do not send test downloads to Telegram; use temporary files inside the worker and delete them after measurement.
 - Before changing routing, preserve the active compose command and verify Redis, Bot API, web, worker, and WARP health.
 

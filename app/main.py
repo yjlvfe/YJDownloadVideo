@@ -137,7 +137,7 @@ def create_job(data: CreateRequest, request: Request):
         active = db.query(Job).filter(
             Job.owner_key == key,
             Job.status.in_(['waiting', 'downloading', 'preparing'])).count()
-        if active >= settings.max_active_jobs_per_ip:
+        if settings.max_active_jobs_per_ip > 0 and active >= settings.max_active_jobs_per_ip:
             raise HTTPException(429, 'لديك عمليات نشطة كثيرة')
         existing = db.query(Job).filter(
             Job.owner_key == key, Job.url == url, Job.requested_format == data.format_id,

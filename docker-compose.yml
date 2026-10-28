@@ -24,6 +24,8 @@ services:
       REDIS_URL: redis://redis:6379/0
       YTDLP_PROXY: http://warp:9002
       MAX_FRAGMENT_CONNECTIONS_PER_JOB: "32"
+      MAX_ACTIVE_JOBS_PER_IP: "0"
+      MAX_ACTIVE_JOBS_PER_TELEGRAM_USER: "0"
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-proxy-headers
     restart: unless-stopped
     ports:
@@ -45,6 +47,8 @@ services:
       REDIS_URL: redis://redis:6379/0
       YTDLP_PROXY: http://warp:9002
       MAX_FRAGMENT_CONNECTIONS_PER_JOB: "32"
+      MAX_ACTIVE_JOBS_PER_IP: "0"
+      MAX_ACTIVE_JOBS_PER_TELEGRAM_USER: "0"
     command: python -m app.worker
     restart: unless-stopped
     volumes:
@@ -64,6 +68,8 @@ services:
       REDIS_URL: redis://redis:6379/0
       YTDLP_PROXY: http://warp:9002
       MAX_FRAGMENT_CONNECTIONS_PER_JOB: "32"
+      MAX_ACTIVE_JOBS_PER_IP: "0"
+      MAX_ACTIVE_JOBS_PER_TELEGRAM_USER: "0"
     command: python -m app.bot
     restart: unless-stopped
     volumes:
@@ -83,6 +89,8 @@ services:
       REDIS_URL: redis://redis:6379/0
       YTDLP_PROXY: http://warp:9002
       MAX_FRAGMENT_CONNECTIONS_PER_JOB: "32"
+      MAX_ACTIVE_JOBS_PER_IP: "0"
+      MAX_ACTIVE_JOBS_PER_TELEGRAM_USER: "0"
     command: python -m app.cleanup
     restart: unless-stopped
     volumes:

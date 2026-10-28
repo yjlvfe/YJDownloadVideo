@@ -1,5 +1,5 @@
 # Work Progress
 ## Current
-- Investigating slow first-response/download regression and duplicate/dead code.
+- Verify and document split routing: yt-dlp downloads through WARP; Telegram uploads use the VPS network directly.
 ## Next
-- Trace request-to-queue path, measure startup/download latency, then remove only proven dead duplicates and verify.
+- Inspect upload client/proxy propagation, add regression coverage/docs, recreate affected services, and verify both routes.

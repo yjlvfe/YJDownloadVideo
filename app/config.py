@@ -21,8 +21,10 @@ class Settings(BaseSettings):
     telegram_api_hash: str = ""
     sessions_dir: str = "./data/sessions"
     telegram_send_limit_bytes: int = 2097152000  # 2GB — يطابق خادم Bot API المحلي
-    max_active_jobs_per_ip: int = 50
-    max_active_jobs_per_telegram_user: int = 1
+    # 0 = unlimited admission; Redis remains the durable queue and workers provide backpressure.
+    max_active_jobs_per_ip: int = 0
+    max_active_jobs_per_telegram_user: int = 0
+    # Download proxy is intentionally scoped to yt-dlp only; Telegram upload uses VPS direct egress.
     # كل خدمات YJ تشارك نفقاً وIP واحداً؛ لا نضاعف مهام التنزيل افتراضياً.
     # ارفع القيمة فقط عند تشغيل أنفاق/IPs مستقلة ومثبتة.
     # عدد مهام التنزيل المتزامنة؛ الطابور نفسه غير محدود.

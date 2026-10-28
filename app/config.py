@@ -25,7 +25,10 @@ class Settings(BaseSettings):
     max_active_jobs_per_telegram_user: int = 1
     # كل خدمات YJ تشارك نفقاً وIP واحداً؛ لا نضاعف مهام التنزيل افتراضياً.
     # ارفع القيمة فقط عند تشغيل أنفاق/IPs مستقلة ومثبتة.
-    worker_max_workers: int = 1
+    # عدد مهام التنزيل المتزامنة؛ الطابور نفسه غير محدود.
+    # القيمة قابلة للتعديل حسب عدد الاتصالات/الـIP المتاح.
+    worker_max_workers: int = 20
+    max_fragment_connections_per_job: int = 2
     ytdlp_bin: str = "yt-dlp"
     ytdlp_proxy: str = ""  # بروكسي SOCKS5/HTTP لـ yt-dlp (يتجاوز حظر IP يوتيوب) — e.g. socks5://172.17.0.1:1080
     ffmpeg_bin: str = "ffmpeg"

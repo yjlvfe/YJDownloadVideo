@@ -1038,7 +1038,7 @@ class UniversalExtractor:
             "format_sort": ["res", "ext:mp4:m4a", "vcodec:h264"],
             "ffmpeg_location": ffmpeg_location(),
             # 🚀 تسريع التحميل المتوازي والأداء الأقصى عبر كافة المواقع
-            "concurrent_fragment_downloads": 16,
+            "concurrent_fragment_downloads": max(1, settings.max_fragment_connections_per_job),
             "hls_prefer_native": True,
             "buffersize": 1024 * 256,
             "http_chunk_size": 10485760,

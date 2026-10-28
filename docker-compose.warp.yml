@@ -1,0 +1,60 @@
+# Experimental WARP route: use with docker-compose.novpn.yml only.
+# NordVPN compose remains untouched and is the rollback path.
+services:
+  warp:
+    image: land007/warp-v2ray:latest
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+    environment:
+      CONFIG_MODE: patch
+      WARP_PROTOCOL: MASQUE
+      WARP_MODE: warp
+      XRAY_PORT: "9001"
+      WARP_LOG_LEVEL: warn
+    volumes:
+      - warp_data:/var/lib/cloudflare-warp
+      - warp_config:/config
+    expose:
+      - "9001"
+      - "9002"
+
+  web:
+    environment:
+      YTDLP_PROXY: http://warp:9002
+      MAX_FRAGMENT_CONNECTIONS_PER_JOB: "32"
+    depends_on:
+      warp:
+        condition: service_started
+
+  worker:
+    environment:
+      YTDLP_PROXY: http://warp:9002
+      MAX_FRAGMENT_CONNECTIONS_PER_JOB: "32"
+    depends_on:
+      warp:
+        condition: service_started
+
+  bot:
+    environment:
+      YTDLP_PROXY: http://warp:9002
+      MAX_FRAGMENT_CONNECTIONS_PER_JOB: "32"
+    depends_on:
+      warp:
+        condition: service_started
+
+  cleanup:
+    environment:
+      YTDLP_PROXY: http://warp:9002
+      MAX_FRAGMENT_CONNECTIONS_PER_JOB: "32"
+    depends_on:
+      warp:
+        condition: service_started
+
+volumes:
+  warp_data:
+  warp_config:

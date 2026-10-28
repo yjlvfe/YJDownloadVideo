@@ -1,0 +1,87 @@
+services:
+  web:
+    build: .
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-proxy-headers
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./app:/app/app
+      - ./data:/app/data
+      - ./storage:/app/storage
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: .
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    command: python -m app.worker
+    restart: unless-stopped
+    volumes:
+      - ./app:/app/app
+      - ./data:/app/data
+      - ./storage:/app/storage
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  bot:
+    build: .
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    command: python -m app.bot
+    restart: unless-stopped
+    volumes:
+      - ./app:/app/app
+      - ./data:/app/data
+      - ./storage:/app/storage
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  cleanup:
+    build: .
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    command: python -m app.cleanup
+    restart: unless-stopped
+    volumes:
+      - ./app:/app/app
+      - ./data:/app/data
+      - ./storage:/app/storage
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - redis_data_novpn:/data
+
+  tba:
+    image: aiogram/telegram-bot-api:latest
+    restart: unless-stopped
+    environment:
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH}
+      TELEGRAM_LOCAL: "true"
+    volumes:
+      - tba_data_novpn:/var/lib/telegram-bot-api
+
+volumes:
+  redis_data_novpn:
+  tba_data_novpn:

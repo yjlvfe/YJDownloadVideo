@@ -16,6 +16,12 @@ services:
     volumes:
       - warp_data:/var/lib/cloudflare-warp
       - warp_config:/config
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS --max-time 10 https://www.cloudflare.com/cdn-cgi/trace | grep -q 'warp=on'"]
+      interval: 15s
+      timeout: 12s
+      retries: 8
+      start_period: 45s
 
   web:
     build: .
@@ -36,7 +42,7 @@ services:
       - ./storage:/app/storage
     depends_on:
       warp:
-        condition: service_started
+        condition: service_healthy
       redis:
         condition: service_healthy
 
@@ -57,7 +63,7 @@ services:
       - ./storage:/app/storage
     depends_on:
       warp:
-        condition: service_started
+        condition: service_healthy
       redis:
         condition: service_healthy
 
@@ -78,7 +84,7 @@ services:
       - ./storage:/app/storage
     depends_on:
       warp:
-        condition: service_started
+        condition: service_healthy
       redis:
         condition: service_healthy
 
@@ -99,7 +105,7 @@ services:
       - ./storage:/app/storage
     depends_on:
       warp:
-        condition: service_started
+        condition: service_healthy
       redis:
         condition: service_healthy
 

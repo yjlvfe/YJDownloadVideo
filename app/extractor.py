@@ -532,7 +532,7 @@ class UniversalExtractor:
         opts["outtmpl"] = str(outdir / f"{safe_title}.%(ext)s")
         opts["http_headers"]["Referer"] = info.get("referer", "https://megaplay.buzz/")
         opts["hls_prefer_native"] = True
-        opts["concurrent_fragment_downloads"] = 12
+        opts["concurrent_fragment_downloads"] = max(1, settings.max_fragment_connections_per_job)
         opts["socket_timeout"] = 35
         opts["fragment_retries"] = 10
         opts["retries"] = 10
@@ -576,7 +576,7 @@ class UniversalExtractor:
         opts["outtmpl"] = str(outdir / f"{safe_title}.%(ext)s")
         opts["http_headers"]["Referer"] = info.get("referer", "https://vidvara.cc/")
         opts["hls_prefer_native"] = True
-        opts["concurrent_fragment_downloads"] = 10
+        opts["concurrent_fragment_downloads"] = max(1, settings.max_fragment_connections_per_job)
         opts["socket_timeout"] = 35
         opts["fragment_retries"] = 10
         opts["retries"] = 10

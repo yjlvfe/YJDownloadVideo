@@ -1,3 +1,7 @@
+# Current route override — owner-approved NordVPN trial
+
+Default docker-compose.yml now uses Germany NordLynx via socks5://nordvpn:1080 for downloads only. Keep 64 fragments and unlimited admission; Telegram uploads remain direct. Existing Redis/TBA volumes are preserved. WARP standby: docker-compose.warp-standby.yml. The WARP /ip watcher is stopped and disabled; /ip rotation is unavailable during this trial. This override supersedes historical WARP route statements below.
+
 # YJSocialMediaDownload
 
 Multi-platform social media video and media download service backed by Docker and MicroSocks proxy integration.

@@ -194,24 +194,21 @@ async def _create_job(user_id: int, chat_id: int, url: str, fmt: str, context,
             Job.owner_key == user_key,
             Job.status.in_(["waiting", "downloading", "preparing"]),
         ).count()
-        # 🛡️ الحد الفعلي لكل مستخدم
-        if active >= settings.max_active_jobs_per_telegram_user:
-            try:
-                await context.bot.send_message(
-                    chat_id,
-                    f"⚠️ لديك {active} عمليات نشطة (الحد {settings.max_active_jobs_per_telegram_user}). "
-                    "انتظر اكتمال بعضها ثم أرسل الرابط مجددًا.")
-            except Exception:  # noqa: BLE001
-                pass
-            return None
+        # الحد يخص المهام النشطة فقط؛ الطلبات الزائدة تدخل waiting ولا تُرفض.
+        # العامل يسحبها من Redis بالترتيب عند توفر أحد المقاعد الأربعة.
         job = Job(id=secrets.token_urlsafe(16), url=url, requested_format=fmt,
                   status="waiting", owner_key=user_key, source="telegram")
         db.add(job)
         db.commit()
         jid = job.id
-    # لا رسائل تأكيد منفصلة — رسالة الحالة الواحدة تتكفل بكل شيء (قرار المستخدم 2026-08)
+        queued = active >= settings.max_active_jobs_per_telegram_user
+    # لا رسائل تأكيد منفصلة — رسالة الحالة الواحدة تتكفل بكل شيء.
+    if queued and status_msg:
+        try:
+            await status_msg.edit_text("⏳ في قائمة الانتظار… سيبدأ التحميل تلقائياً عند توفر مكان.")
+        except Exception:  # noqa: BLE001
+            pass
     if WEBHOOK_MODE:
-        # Vercel: لا Redis — تنفيذ فوري داخل العملية (خيط) ثم مراقبة
         _spawn(asyncio.to_thread(process_job, jid))
         await watch_and_deliver(chat_id, jid, status_msg=status_msg)
     else:
@@ -224,10 +221,10 @@ async def _create_job(user_id: int, chat_id: int, url: str, fmt: str, context,
                 row = db.get(Job, jid)
                 if row:
                     row.status = "failed"
-                    row.error = "النظام مشغول حاليًا — حاول بعد قليل"
+                    row.error = "تعذر وضع المهمة في قائمة الانتظار"
                     db.commit()
             try:
-                await context.bot.send_message(chat_id, "⚠️ النظام مشغول حاليًا — حاول بعد قليل.")
+                await context.bot.send_message(chat_id, "⚠️ تعذر وضع المهمة في قائمة الانتظار.")
             except Exception:  # noqa: BLE001
                 pass
             return None

@@ -121,27 +121,32 @@ def _recover_stale_jobs(r):
     except Exception:  # noqa: BLE001
         pass
 
-def _safe_process(jid):
+def _safe_process(jid, slots):
     try:
         process_job(jid)
     except Exception:  # noqa: BLE001
         log.exception("job %s crashed", jid)
+    finally:
+        slots.release()
 
 
 def main():
+    import threading
+    max_workers = max(1, int(getattr(settings, "worker_max_workers", 1)))
+    slots = threading.BoundedSemaphore(max_workers)
     import redis
     r = redis.Redis.from_url(settings.redis_url)
     _recover_stale_jobs(r)
-    # افتراضياً نستخدم مهمة واحدة لأن كل خدمات YJ تشارك نفقاً وIP واحداً.
-    # يمكن رفعه صراحةً عند إضافة أنفاق/IPs مستقلة.
-    max_workers = max(1, int(getattr(settings, "worker_max_workers", 1)))
-    executor = ThreadPoolExecutor(max_workers=max_workers)
+    executor = ThreadPoolExecutor(max_workers=max_workers)  # queue remains unbounded
     while True:
         try:
+            slots.acquire()
             item = r.blpop('yjdownload:jobs', timeout=5)
             if item:
                 jid = item[1].decode()
-                executor.submit(_safe_process, jid)
+                executor.submit(_safe_process, jid, slots)
+            else:
+                slots.release()
         except Exception:  # noqa: BLE001
             time.sleep(5)
 

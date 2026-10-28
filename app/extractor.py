@@ -45,7 +45,8 @@ class DownloadError(Exception):
 _TRANSIENT_RE = re.compile(
     r"connection refused|connection reset|connection aborted"
     r"|\[errno\s*(?:111|104|32|110)\]"
-    r"|timed?\s?-?out|temporary failure",
+    r"|timed?\s?-?out|temporary failure"
+    r"|downloaded file is empty|file is empty|empty file",
     re.IGNORECASE,
 )
 

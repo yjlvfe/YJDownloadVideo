@@ -143,7 +143,13 @@ def main():
     import redis
     max_workers = max(1, int(getattr(settings, "worker_max_workers", 1)))
     slots = threading.BoundedSemaphore(max_workers)
-    r = redis.Redis.from_url(settings.redis_url)
+    r = redis.Redis.from_url(
+        settings.redis_url,
+        socket_connect_timeout=10,
+        socket_timeout=10,
+        retry_on_timeout=True,
+        health_check_interval=30,
+    )
     _recover_stale_jobs(r)
     # نسحب من Redis فقط عند توفر مقعد؛ الطلبات الزائدة تبقى waiting في Redis.
     executor = ThreadPoolExecutor(max_workers=max_workers)

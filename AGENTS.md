@@ -29,3 +29,5 @@ Multi-platform social media video and media download service backed by Docker an
 ## Performance notes
 - Measured active WARP route with the latest saved test URL: `20.10 MiB/s` using 32 concurrent HLS fragments. Keep 32 unless a fresh measurement shows a better stable value.
 - Do not claim WARP is faster than NordVPN without comparable same-URL measurements. Do not make WARP permanent as a product decision without Yousef's explicit approval.
+- Treat transient Redis socket timeouts and empty downloader artifacts as retryable transport failures; use bounded Redis socket/retry settings and retry the same yt-dlp request before marking a job failed. Do not rotate WARP or NordVPN for destination-level HTTP errors.
+- Keep provider-specific permanent errors non-retryable; retries are for transport/empty-artifact failures only, so one blocked site does not create a request storm for every site.

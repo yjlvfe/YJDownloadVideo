@@ -13,11 +13,14 @@ Multi-platform social media video and media download service backed by Docker an
 - View logs: `docker compose logs -f --tail=100`
 
 ## Conventions & invariants
-- **Current YJ production route:** run `docker-compose.novpn.yml` plus `docker-compose.warp.yml`. `web`, `worker`, `bot`, and `cleanup` use `YTDLP_PROXY=http://warp:9002` and `MAX_FRAGMENT_CONNECTIONS_PER_JOB=32`.
+- **Current YJ production route:** run the default `docker-compose.yml` (now WARP-based). `web`, `worker`, `bot`, and `cleanup` use `YTDLP_PROXY=http://warp:9002` and `MAX_FRAGMENT_CONNECTIONS_PER_JOB=32`.
+- `docker-compose.novpn.yml` and `docker-compose.warp.yml` are retained as compatibility/reference files; the default file is the source of truth for boot and deployment.
+- `docker-compose.nordvpn.yml` is the preserved manual rollback file and must never be auto-started.
+- `deploy.sh` is the canonical deployment command and uses only the WARP default compose.
 - **WARP is YJ-only:** do not connect CryptoVPN, BinanceChecker, or MyWalletChecker to this route. WARP is the active route for YJ; verify `warp=on` from the worker before declaring it healthy.
-- **NordVPN is standby only:** preserve `docker-compose.yml`, `.env` NordVPN credentials, and the Germany fallback. Do not delete or alter NordVPN; restore it only when Yousef explicitly requests rollback.
-- **Start active YJ route:** `docker compose -f docker-compose.novpn.yml -f docker-compose.warp.yml --env-file .env up -d --build --remove-orphans`.
-- **Rollback to NordVPN:** `docker compose -f docker-compose.novpn.yml -f docker-compose.warp.yml down --remove-orphans`, then `docker compose --env-file .env up -d --build`; verify `nordvpn status` and the service health before reporting rollback.
+- **NordVPN is standby only:** preserve `docker-compose.nordvpn.yml`, `.env` NordVPN credentials, and the Germany fallback. Do not delete or alter NordVPN; restore it only when Yousef explicitly requests rollback.
+- **Start active YJ route:** `docker compose --env-file .env up -d --build --remove-orphans`.
+- **Rollback to NordVPN:** `docker compose down --remove-orphans`, then `docker compose -f docker-compose.nordvpn.yml --env-file .env up -d --build --remove-orphans`; verify `nordvpn status` and service health before reporting rollback.
 - Container isolation: traffic for YJ is routed through the dedicated WARP container/proxy; do not bind proxy host-wide.
 - Never modify `.env` tokens without rotating dependent platform webhooks.
 - Do not send test downloads to Telegram; use temporary files inside the worker and delete them after measurement.

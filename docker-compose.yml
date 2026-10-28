@@ -1,65 +1,50 @@
 services:
-  # ===== NordVPN داخل Docker (لا يمس شبكة الهوست إطلاقاً) =====
-  # كل حاويات التطبيق (web/bot/worker/cleanup) تشارك شبكة هذه الحاوية:
-  # network_mode: service:nordvpn — فخرجها كله عبر VPN، والهوست/SSH يبقى على IP السيرفر.
-  # الاختيار تلقائي: CONNECT=Germany يتصل بأفضل سيرفر (أقل حمل) في ألمانيا.
-  # التبديل اليدوي/التلقائي: سكربت الهوست rotate-vpn.sh عبر docker exec.
-  nordvpn:
-    image: cryptovpn-nordvpn:modern
+  warp:
+    image: land007/warp-v2ray:latest
     restart: unless-stopped
     cap_add:
       - NET_ADMIN
-      - NET_RAW
-      - SYS_MODULE
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
     environment:
-      TOKEN: ${NORDVPN_TOKEN}
-      # فارغ = NordVPN يختار الخادم الموصى به عالمياً (الأقل حملاً/الأفضل توفراً).
-      # ضع NORDVPN_CONNECT صراحةً فقط عند الحاجة لمنطقة محددة.
-      CONNECT: ${NORDVPN_CONNECT:-}
-      TECHNOLOGY: NORDLYNX
-      DNS: 127.0.0.11
-    ports:
-      # بورت web انتقل لهنا (الحاويات المشاركة للشبكة لا تنشر بورتات بنفسها)
-      - "127.0.0.1:8000:8000"
-      # SOCKS5 لـ privoxy على الهوست (YJCryptoSignal geo-unblock) عبر VPN
-      - "127.0.0.1:1080:1080"
-    healthcheck:
-      test: ["CMD-SHELL", "nordvpn status 2>/dev/null | grep -q 'Status: Connected'"]
-      interval: 20s
-      timeout: 8s
-      retries: 5
-      start_period: 45s
-  # microsocks داخل شبكة NordVPN — للـ privoxy على الهوست (سلسلة geo-unblock القديمة)
-  socks:
-    build:
-      context: .
-      dockerfile: Dockerfile.microsocks
-    restart: unless-stopped
-    network_mode: service:nordvpn
-    depends_on:
-      nordvpn:
-        condition: service_healthy
+      CONFIG_MODE: patch
+      WARP_PROTOCOL: MASQUE
+      WARP_MODE: warp
+      XRAY_PORT: "9001"
+    volumes:
+      - warp_data:/var/lib/cloudflare-warp
+      - warp_config:/config
+
   web:
     build: .
-    network_mode: service:nordvpn
     env_file: .env
     environment:
       REDIS_URL: redis://redis:6379/0
+      YTDLP_PROXY: http://warp:9002
+      MAX_FRAGMENT_CONNECTIONS_PER_JOB: "32"
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-proxy-headers
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
     volumes:
       - ./app:/app/app
       - ./data:/app/data
       - ./storage:/app/storage
     depends_on:
-      - nordvpn
-      - redis
+      warp:
+        condition: service_started
+      redis:
+        condition: service_healthy
+
   worker:
     build: .
-    network_mode: service:nordvpn
     env_file: .env
     environment:
       REDIS_URL: redis://redis:6379/0
+      YTDLP_PROXY: http://warp:9002
+      MAX_FRAGMENT_CONNECTIONS_PER_JOB: "32"
     command: python -m app.worker
     restart: unless-stopped
     volumes:
@@ -67,32 +52,37 @@ services:
       - ./data:/app/data
       - ./storage:/app/storage
     depends_on:
-      nordvpn:
-        condition: service_healthy
+      warp:
+        condition: service_started
       redis:
         condition: service_healthy
+
   bot:
     build: .
-    network_mode: service:nordvpn
     env_file: .env
     environment:
       REDIS_URL: redis://redis:6379/0
+      YTDLP_PROXY: http://warp:9002
+      MAX_FRAGMENT_CONNECTIONS_PER_JOB: "32"
     command: python -m app.bot
     restart: unless-stopped
     volumes:
       - ./app:/app/app
       - ./data:/app/data
       - ./storage:/app/storage
-      - /opt/vpn-ctl:/app/vpn-ctl
     depends_on:
-      - nordvpn
-      - redis
+      warp:
+        condition: service_started
+      redis:
+        condition: service_healthy
+
   cleanup:
     build: .
-    network_mode: service:nordvpn
     env_file: .env
     environment:
       REDIS_URL: redis://redis:6379/0
+      YTDLP_PROXY: http://warp:9002
+      MAX_FRAGMENT_CONNECTIONS_PER_JOB: "32"
     command: python -m app.cleanup
     restart: unless-stopped
     volumes:
@@ -100,8 +90,11 @@ services:
       - ./data:/app/data
       - ./storage:/app/storage
     depends_on:
-      - nordvpn
-      - redis
+      warp:
+        condition: service_started
+      redis:
+        condition: service_healthy
+
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -111,11 +104,8 @@ services:
       timeout: 3s
       retries: 10
     volumes:
-      - redis_data:/data
-  # Local Telegram Bot API Server — يرفع حد إرسال البوت إلى 2GB (بدون تسجيل دخول)
-  # الصورة الرسمية الجاهزة: https://hub.docker.com/r/aiogram/telegram-bot-api
-  # ملاحظة: سكربت الدخول يتجاهل command: — يقرأ متغيرات البيئة فقط.
-  # TELEGRAM_LOCAL=true هو اللي يفعل وضع --local (حد 2GB) — بدونه يبقى حد 50MB!
+      - redis_data_novpn:/data
+
   tba:
     image: aiogram/telegram-bot-api:latest
     restart: unless-stopped
@@ -124,7 +114,10 @@ services:
       TELEGRAM_API_HASH: ${TELEGRAM_API_HASH}
       TELEGRAM_LOCAL: "true"
     volumes:
-      - tba_data:/var/lib/telegram-bot-api
+      - tba_data_novpn:/var/lib/telegram-bot-api
+
 volumes:
-  redis_data:
-  tba_data:
+  redis_data_novpn:
+  warp_data:
+  warp_config:
+  tba_data_novpn:

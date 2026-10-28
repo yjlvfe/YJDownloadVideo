@@ -6,36 +6,11 @@
 set -e
 cd "$(dirname "$0")"
 
-# كل ملفات app/ — انسخها لكل الحاويات (لو نسيت ملف، حاوية بتشتغل بكود قديم)
-FILES=(
-  app/config.py
-  app/extractor.py
-  app/bot.py
-  app/worker.py
-  app/status.py
-  app/main.py
-  app/db.py
-  app/security.py
-)
+# YJ active route: Cloudflare WARP. NordVPN is standby in docker-compose.nordvpn.yml.
+COMPOSE=(docker compose --env-file .env)
 
-CONTAINERS=(yjdownloadvideo-bot-1 yjdownloadvideo-worker-1 yjdownloadvideo-web-1)
 
-for c in "${CONTAINERS[@]}"; do
-  if docker ps --format '{{.Names}}' | grep -q "^${c}$"; then
-    for f in "${FILES[@]}"; do
-      [ -f "$f" ] && docker cp "$f" "$c:/app/$f"
-    done
-    docker exec "$c" ln -sf /usr/bin/qjs /usr/bin/quickjs 2>/dev/null || true
-    docker restart "$c"
-    echo "✅ $c محدّث"
-  fi
-done
-
-# .env (إن تغيّر)
-for c in "${CONTAINERS[@]}"; do
-  if docker ps --format '{{.Names}}' | grep -q "^${c}$"; then
-    [ -f .env ] && docker cp .env "$c:/app/.env"
-  fi
-done
-
-echo "=== اكتمل النشر الموحّد ==="
+# Source mounts keep every service on the current repository code.
+"${COMPOSE[@]}" up -d --build --remove-orphans
+"${COMPOSE[@]}" ps
+echo "=== YJ deployed on WARP (NordVPN standby only) ==="

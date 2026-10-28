@@ -41,7 +41,28 @@ TELEGRAM_API_HASH=...
 SECRET_KEY=<قيمة عشوائية طويلة>
 ```
 
-### وضع VPN — الأداء والتوافق الأفضل للمواقع الجغرافية
+### التشغيل الافتراضي المعتمد: WARP
+
+`docker-compose.yml` هو مصدر التشغيل الافتراضي ويستخدم WARP، وليس NordVPN. ينشر `deploy.sh` المصدر الحالي عبر Compose والبناء، ولا ينسخ كوداً مؤقتاً داخل الحاويات. خدمات التطبيق تستخدم `YTDLP_PROXY=http://warp:9002` وتوازي fragments بقيمة `32`. سياسات `restart: unless-stopped` تعيد الحاويات الحالية بعد إقلاع Docker؛ لا يوجد تحويل تلقائي إلى NordVPN.
+
+```bash
+docker compose --env-file .env up -d --build --remove-orphans
+```
+
+هذا ربط HTTP proxy لتنزيلات yt-dlp، وليس ضماناً أن كل اتصال صادر (مثل Telegram أو أي عميل HTTP آخر) يمر بالنفق. Redis وBot API يبقيان على الشبكة الداخلية. تم اختبار stop/start للمشروع وعودة `warp=on`؛ لم تتم إعادة تشغيل السيرفر نفسه.
+
+### NordVPN احتياطي — بطلب صريح فقط
+
+الملف الاحتياطي هو `docker-compose.nordvpn.yml`. للرجوع اليدوي فقط:
+
+```bash
+docker compose down --remove-orphans
+docker compose -f docker-compose.nordvpn.yml --env-file .env up -d --build --remove-orphans
+```
+
+الأوامر القديمة أدناه تخص الوضع الاحتياطي، ويجب استخدام `-f docker-compose.nordvpn.yml` عند تشغيله.
+
+### إعداد اعتماد NordVPN الاحتياطي
 
 ضع توكن NordVPN في `.env`:
 

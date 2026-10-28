@@ -79,6 +79,7 @@ services:
     command: python -m app.bot
     restart: unless-stopped
     volumes:
+      - /opt/vpn-ctl:/app/vpn-ctl
       - ./app:/app/app
       - ./data:/app/data
       - ./storage:/app/storage

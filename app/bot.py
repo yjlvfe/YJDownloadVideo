@@ -88,6 +88,8 @@ def _ask_rotate() -> bool:
 
 async def ip_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """يعرض الـ IP الحالي + زرّي تغيير/إلغاء."""
+    if not update.effective_user or update.effective_user.id != 528864559:
+        return
     cur = _read_ip()
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("🔄 تغيير", callback_data="ip:change"),
@@ -103,6 +105,9 @@ async def on_ip_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """معالجة زرّي تغيير/إلغاء — مع ضمان تغيير حقيقي (إعادة المحاولة تلقائيًا)."""
     import os
     query = update.callback_query
+    if not update.effective_user or update.effective_user.id != 528864559:
+        await query.answer("غير مصرح", show_alert=True)
+        return
     data = query.data or ""
     await query.answer()
     if data == "ip:cancel":
@@ -127,7 +132,10 @@ async def on_ip_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
     import asyncio
-    MAX_TRIES = 6
+    MAX_TRIES = 1
+    if os.path.exists(os.path.join(ctl, "rotate.now")):
+        await query.message.edit_text("⏳ إعادة اتصال WARP قيد التنفيذ بالفعل.")
+        return
     for attempt in range(1, MAX_TRIES + 1):
         if not _ask_rotate():
             await query.message.edit_text("❌ تعذر طلب التبديل — تحقق من السيرفر.")
@@ -139,8 +147,7 @@ async def on_ip_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # علم ما زال موجودًا؟ المراقب لسه ما عالج
             if not os.path.exists(os.path.join(ctl, "rotate.now")):
                 new_ip = _read_ip()
-                if new_ip != old_ip and new_ip != "غير معروف":
-                    break
+                break
         if new_ip != old_ip and new_ip != "غير معروف":
             try:
                 await query.message.edit_text(
@@ -160,7 +167,7 @@ async def on_ip_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         await query.message.edit_text(
-            "⚠️ تعذر تغيير الـ IP بعد عدة محاولات — جرّب لاحقًا.", parse_mode="HTML")
+            "⚠️ انتهت محاولة إعادة اتصال WARP دون رصد عنوان جديد. Cloudflare قد يعيد نفس IP؛ تغيير العنوان غير مضمون.", parse_mode="HTML")
     except Exception:
         pass
 

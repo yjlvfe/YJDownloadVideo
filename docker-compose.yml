@@ -28,7 +28,7 @@ services:
     env_file: .env
     environment:
       REDIS_URL: redis://redis:6379/0
-      YTDLP_PROXY: socks5://nordvpn:1080
+      YTDLP_PROXY: socks5h://nordvpn:1080
       MAX_FRAGMENT_CONNECTIONS_PER_JOB: "64"
       MAX_ACTIVE_JOBS_PER_IP: "0"
       MAX_ACTIVE_JOBS_PER_TELEGRAM_USER: "0"
@@ -51,7 +51,7 @@ services:
     env_file: .env
     environment:
       REDIS_URL: redis://redis:6379/0
-      YTDLP_PROXY: socks5://nordvpn:1080
+      YTDLP_PROXY: socks5h://nordvpn:1080
       MAX_FRAGMENT_CONNECTIONS_PER_JOB: "64"
       MAX_ACTIVE_JOBS_PER_IP: "0"
       MAX_ACTIVE_JOBS_PER_TELEGRAM_USER: "0"
@@ -72,7 +72,7 @@ services:
     env_file: .env
     environment:
       REDIS_URL: redis://redis:6379/0
-      YTDLP_PROXY: socks5://nordvpn:1080
+      YTDLP_PROXY: socks5h://nordvpn:1080
       MAX_FRAGMENT_CONNECTIONS_PER_JOB: "64"
       MAX_ACTIVE_JOBS_PER_IP: "0"
       MAX_ACTIVE_JOBS_PER_TELEGRAM_USER: "0"
@@ -94,7 +94,7 @@ services:
     env_file: .env
     environment:
       REDIS_URL: redis://redis:6379/0
-      YTDLP_PROXY: socks5://nordvpn:1080
+      YTDLP_PROXY: socks5h://nordvpn:1080
       MAX_FRAGMENT_CONNECTIONS_PER_JOB: "64"
       MAX_ACTIVE_JOBS_PER_IP: "0"
       MAX_ACTIVE_JOBS_PER_TELEGRAM_USER: "0"

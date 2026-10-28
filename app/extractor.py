@@ -202,7 +202,7 @@ class UniversalExtractor:
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
                         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                     }
-                    with httpx.Client(follow_redirects=True, timeout=12.0, headers=headers) as client:
+                    with httpx.Client(follow_redirects=True, timeout=12.0, headers=headers, proxy=settings.ytdlp_proxy or None) as client:
                         resp = client.get(url)
                         if resp.status_code == 200:
                             main_html = resp.text
@@ -417,7 +417,7 @@ class UniversalExtractor:
                 sub_or_dub = m_direct.group(3).lower()
 
         try:
-            with httpx.Client(follow_redirects=True, timeout=12.0, headers=headers) as client:
+            with httpx.Client(follow_redirects=True, timeout=12.0, headers=headers, proxy=settings.ytdlp_proxy or None) as client:
                 resp = client.get(url)
                 if resp.status_code == 200:
                     html = resp.text
@@ -532,7 +532,8 @@ class UniversalExtractor:
         opts["outtmpl"] = str(outdir / f"{safe_title}.%(ext)s")
         opts["http_headers"]["Referer"] = info.get("referer", "https://megaplay.buzz/")
         opts["hls_prefer_native"] = True
-        opts["concurrent_fragment_downloads"] = max(1, settings.max_fragment_connections_per_job)
+        opts["concurrent_fragment_downloads"] = min(8, max(1, settings.max_fragment_connections_per_job))
+        opts["skip_unavailable_fragments"] = False
         opts["socket_timeout"] = 35
         opts["fragment_retries"] = 10
         opts["retries"] = 10
@@ -548,7 +549,7 @@ class UniversalExtractor:
 
         if preferred != "audio" and path.suffix.lower() == ".mp4":
             try:
-                fixed_tmp = path.with_suffix(".faststart.tmp")
+                fixed_tmp = path.with_suffix(".faststart.tmp.mp4")
                 res = subprocess.run(
                     [ffmpeg_location() or "ffmpeg", "-y", "-v", "error", "-i", str(path),
                      "-c", "copy", "-movflags", "+faststart", str(fixed_tmp)],
@@ -576,7 +577,8 @@ class UniversalExtractor:
         opts["outtmpl"] = str(outdir / f"{safe_title}.%(ext)s")
         opts["http_headers"]["Referer"] = info.get("referer", "https://vidvara.cc/")
         opts["hls_prefer_native"] = True
-        opts["concurrent_fragment_downloads"] = max(1, settings.max_fragment_connections_per_job)
+        opts["concurrent_fragment_downloads"] = min(8, max(1, settings.max_fragment_connections_per_job))
+        opts["skip_unavailable_fragments"] = False
         opts["socket_timeout"] = 35
         opts["fragment_retries"] = 10
         opts["retries"] = 10
@@ -592,7 +594,7 @@ class UniversalExtractor:
 
         if preferred != "audio" and path.suffix.lower() == ".mp4":
             try:
-                fixed_tmp = path.with_suffix(".faststart.tmp")
+                fixed_tmp = path.with_suffix(".faststart.tmp.mp4")
                 res = subprocess.run(
                     [ffmpeg_location() or "ffmpeg", "-y", "-v", "error", "-i", str(path),
                      "-c", "copy", "-movflags", "+faststart", str(fixed_tmp)],
@@ -720,7 +722,7 @@ class UniversalExtractor:
                         try:
                             import subprocess
                             from app.extractor import ffmpeg_location
-                            fixed_tmp = path.with_suffix(".faststart.tmp")
+                            fixed_tmp = path.with_suffix(".faststart.tmp.mp4")
                             res = subprocess.run(
                                 [ffmpeg_location() or "ffmpeg", "-y", "-v", "error", "-i", str(path),
                                  "-c", "copy", "-movflags", "+faststart", str(fixed_tmp)],
@@ -837,7 +839,7 @@ class UniversalExtractor:
                                 # تطبيق faststart على التنزيل المباشر أيضاً
                                 try:
                                     import subprocess
-                                    fixed_tmp = fpath.with_suffix(".faststart.tmp")
+                                    fixed_tmp = fpath.with_suffix(".faststart.tmp.mp4")
                                     subprocess.run(
                                         ["ffmpeg", "-y", "-v", "error", "-i", str(fpath),
                                          "-c", "copy", "-movflags", "+faststart", str(fixed_tmp)],
@@ -1177,7 +1179,7 @@ class UniversalExtractor:
         if preferred != "audio" and path.suffix.lower() == ".mp4":
             try:
                 import subprocess
-                fixed_tmp = path.with_suffix(".faststart.tmp")
+                fixed_tmp = path.with_suffix(".faststart.tmp.mp4")
                 res = subprocess.run(
                     [ffmpeg_location() or "ffmpeg", "-y", "-v", "error", "-i", str(path),
                      "-c", "copy", "-movflags", "+faststart", str(fixed_tmp)],

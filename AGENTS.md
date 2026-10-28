@@ -13,7 +13,7 @@ Multi-platform social media video and media download service backed by Docker an
 - View logs: `docker compose logs -f --tail=100`
 
 ## Conventions & invariants
-- **Current YJ production route:** run the default `docker-compose.yml` (now WARP-based). `web`, `worker`, `bot`, and `cleanup` use `YTDLP_PROXY=http://warp:9002` and `MAX_FRAGMENT_CONNECTIONS_PER_JOB=32`.
+- **Current YJ production route:** run the default `docker-compose.yml` (now WARP-based). `web`, `worker`, `bot`, and `cleanup` use `YTDLP_PROXY=http://warp:9002` and `MAX_FRAGMENT_CONNECTIONS_PER_JOB=64`.
 - `docker-compose.novpn.yml` and `docker-compose.warp.yml` are retained as compatibility/reference files; the default file is the source of truth for boot and deployment.
 - `docker-compose.nordvpn.yml` is the preserved manual rollback file and must never be auto-started.
 - `deploy.sh` is the canonical deployment command and uses only the WARP default compose.
@@ -29,7 +29,7 @@ Multi-platform social media video and media download service backed by Docker an
 - Before changing routing, preserve the active compose command and verify Redis, Bot API, web, worker, and WARP health.
 
 ## Performance notes
-- Measured active WARP route with the latest saved test URL: `20.10 MiB/s` using 32 concurrent HLS fragments. Keep 32 unless a fresh measurement shows a better stable value.
+- Measured active WARP route with the latest saved test URL: `20.10 MiB/s` using 32 concurrent HLS fragments. Current approved production setting is 64 fragments after a four-job concurrent probe reduced total completion time from 123.7–127.5s to 98.3–107.9s. This is not evidence of 20 MB/s per job.
 - Do not claim WARP is faster than NordVPN without comparable same-URL measurements. Do not make WARP permanent as a product decision without Yousef's explicit approval.
 - Treat transient Redis socket timeouts and empty downloader artifacts as retryable transport failures; use bounded Redis socket/retry settings and retry the same yt-dlp request before marking a job failed. Do not rotate WARP or NordVPN for destination-level HTTP errors.
 - Keep provider-specific permanent errors non-retryable; retries are for transport/empty-artifact failures only, so one blocked site does not create a request storm for every site.

@@ -111,43 +111,55 @@ def _recover_stale_jobs(r):
         with SessionLocal() as db:
             stale = db.query(Job).filter(
                 Job.status.in_(['downloading', 'preparing']),
-                Job.created_at < utcnow() - timedelta(minutes=10),
             ).all()
             for j in stale:
+                status_file = settings.status_path / f"{j.id}.json"
+                # لا نقتل مهمة طويلة لمجرد أن عمرها تجاوز 10 دقائق؛
+                # ملف الحالة يتجدد مع كل تقدم حقيقي. نعيد فقط المهمة بلا heartbeat.
+                fresh = status_file.exists() and (time.time() - status_file.stat().st_mtime) < 900
+                if fresh:
+                    continue
                 j.status = 'waiting'
                 db.commit()
                 r.rpush('yjdownload:jobs', j.id)
                 print(f"recovered stale job {j.id}")
+            waiting = db.query(Job).filter(Job.status == 'waiting').all()
+            queued = {x.decode() if isinstance(x, bytes) else x for x in r.lrange('yjdownload:jobs', 0, -1)}
+            for j in waiting:
+                if j.id not in queued:
+                    r.rpush('yjdownload:jobs', j.id)
     except Exception:  # noqa: BLE001
         pass
 
-def _safe_process(jid, slots):
+def _safe_process(jid):
     try:
         process_job(jid)
     except Exception:  # noqa: BLE001
         log.exception("job %s crashed", jid)
-    finally:
-        slots.release()
 
 
 def main():
     import threading
+    import redis
     max_workers = max(1, int(getattr(settings, "worker_max_workers", 1)))
     slots = threading.BoundedSemaphore(max_workers)
-    import redis
     r = redis.Redis.from_url(settings.redis_url)
     _recover_stale_jobs(r)
-    executor = ThreadPoolExecutor(max_workers=max_workers)  # queue remains unbounded
+    # نسحب من Redis فقط عند توفر مقعد؛ الطلبات الزائدة تبقى waiting في Redis.
+    executor = ThreadPoolExecutor(max_workers=max_workers)
     while True:
         try:
             slots.acquire()
             item = r.blpop('yjdownload:jobs', timeout=5)
-            if item:
-                jid = item[1].decode()
-                executor.submit(_safe_process, jid, slots)
-            else:
+            if not item:
                 slots.release()
+                continue
+            jid = item[1].decode()
+            future = executor.submit(_safe_process, jid)
+            future.add_done_callback(lambda _f: slots.release())
         except Exception:  # noqa: BLE001
+            slots.release()
+            log.exception("queue dispatcher error")
             time.sleep(5)
 
 if __name__ == '__main__':

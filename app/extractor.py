@@ -624,7 +624,9 @@ class UniversalExtractor:
             last_err = None
             for attempt in range(3):
                 try:
-                    return self._download_vidara(vidara_info, outdir, preferred)
+                    # Refresh the page-derived HLS URL on each transient retry.
+                    fresh_info = self._fetch_vidara_info(url) or vidara_info
+                    return self._download_vidara(fresh_info, outdir, preferred)
                 except Exception as e:
                     last_err = e
                     if attempt < 2 and _is_transient_error(e):

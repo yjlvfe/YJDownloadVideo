@@ -1044,8 +1044,8 @@ class UniversalExtractor:
             "http_chunk_size": 10485760,
             "js_runtimes": {"quickjs": {}},
             "postprocessor_args": {"Merger": ["-movflags", "+faststart"]},
-            "geo_bypass": True,
-            "geo_bypass_country": "AE",
+            # VPN provides the egress region; do not advertise a stale fixed country.
+            "geo_bypass": False,
         }
         # لا نضع impersonate افتراضياً لجميع المواقع لأن خوادم HLS/CDN (مثل phncdn وبعض سيرفرات البث)
         # تفشل عند التعامل مع curl_cffi/impersonate وتعيد استجابات فارغة (The downloaded file is empty)
@@ -1073,8 +1073,8 @@ class UniversalExtractor:
             "no_warnings": True, "socket_timeout": 20,
             "http_headers": _ytdlp_headers(),
             "js_runtimes": {"quickjs": {}},
-            "geo_bypass": True,
-            "geo_bypass_country": "AE",
+            # VPN provides the egress region; do not advertise a stale fixed country.
+            "geo_bypass": False,
         }
         if getattr(settings, "ytdlp_proxy", ""):
             opts["proxy"] = settings.ytdlp_proxy

@@ -22,7 +22,10 @@ class Settings(BaseSettings):
     sessions_dir: str = "./data/sessions"
     telegram_send_limit_bytes: int = 2097152000  # 2GB — يطابق خادم Bot API المحلي
     max_active_jobs_per_ip: int = 50
-    max_active_jobs_per_telegram_user: int = 50
+    max_active_jobs_per_telegram_user: int = 1
+    # كل خدمات YJ تشارك نفقاً وIP واحداً؛ لا نضاعف مهام التنزيل افتراضياً.
+    # ارفع القيمة فقط عند تشغيل أنفاق/IPs مستقلة ومثبتة.
+    worker_max_workers: int = 1
     ytdlp_bin: str = "yt-dlp"
     ytdlp_proxy: str = ""  # بروكسي SOCKS5/HTTP لـ yt-dlp (يتجاوز حظر IP يوتيوب) — e.g. socks5://172.17.0.1:1080
     ffmpeg_bin: str = "ffmpeg"

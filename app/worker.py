@@ -132,9 +132,10 @@ def main():
     import redis
     r = redis.Redis.from_url(settings.redis_url)
     _recover_stale_jobs(r)
-    # حدّ التوازي على مستوى المهام حتى لا تتنافس 10 مهام × 16 أجزاء HLS
-    # على نفس الـ VPN/CDN؛ هذا كان سبب بطء بدء التنزيل وتذبذب السرعة.
-    executor = ThreadPoolExecutor(max_workers=4)
+    # افتراضياً نستخدم مهمة واحدة لأن كل خدمات YJ تشارك نفقاً وIP واحداً.
+    # يمكن رفعه صراحةً عند إضافة أنفاق/IPs مستقلة.
+    max_workers = max(1, int(getattr(settings, "worker_max_workers", 1)))
+    executor = ThreadPoolExecutor(max_workers=max_workers)
     while True:
         try:
             item = r.blpop('yjdownload:jobs', timeout=5)

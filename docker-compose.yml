@@ -13,7 +13,9 @@ services:
       - SYS_MODULE
     environment:
       TOKEN: ${NORDVPN_TOKEN}
-      CONNECT: ${NORDVPN_CONNECT:-United_Arab_Emirates}
+      # فارغ = NordVPN يختار الخادم الموصى به عالمياً (الأقل حملاً/الأفضل توفراً).
+      # ضع NORDVPN_CONNECT صراحةً فقط عند الحاجة لمنطقة محددة.
+      CONNECT: ${NORDVPN_CONNECT:-}
       TECHNOLOGY: NORDLYNX
       DNS: 127.0.0.11
     ports:

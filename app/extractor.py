@@ -323,7 +323,7 @@ class UniversalExtractor:
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
                 }
                 payload = {"filecode": filecode, "device": "web", "codecs": []}
-                with httpx.Client(timeout=10.0) as client:
+                with httpx.Client(timeout=10.0, proxy=settings.ytdlp_proxy or None) as client:
                     res = client.post(api_url, headers=headers, json=payload)
                     if res.status_code == 200:
                         data = res.json()
@@ -331,7 +331,7 @@ class UniversalExtractor:
                         if stream_url:
                             # 🛡️ تحقق سريع أن رابط البث شغال وغير محذوف (404)
                             try:
-                                with httpx.Client(timeout=4.0) as chk:
+                                with httpx.Client(timeout=4.0, proxy=settings.ytdlp_proxy or None) as chk:
                                     chk_r = chk.get(stream_url, headers={"Referer": f"https://{domain}/", "User-Agent": "Mozilla/5.0"})
                                     if chk_r.status_code == 200:
                                         return {
@@ -371,7 +371,7 @@ class UniversalExtractor:
                 try:
                     moly_url = f"https://vidmoly.biz/embed-{m_moly.group(1)}.html"
                     headers = {"User-Agent": "Mozilla/5.0"}
-                    with httpx.Client(follow_redirects=True, timeout=8.0, headers=headers) as c:
+                    with httpx.Client(follow_redirects=True, timeout=8.0, headers=headers, proxy=settings.ytdlp_proxy or None) as c:
                         r_moly = c.get(moly_url)
                         m3u8s = re.findall(r'https?://[^\s\"\'<>]+\.m3u8[^\s\"\'<>]*', r_moly.text)
                         if m3u8s:
@@ -486,7 +486,7 @@ class UniversalExtractor:
         ]
 
         try:
-            with httpx.Client(follow_redirects=True, timeout=12.0, headers=api_headers) as client:
+            with httpx.Client(follow_redirects=True, timeout=12.0, headers=api_headers, proxy=settings.ytdlp_proxy or None) as client:
                 for ep_url in endpoints:
                     try:
                         resp = client.get(ep_url)
@@ -626,12 +626,12 @@ class UniversalExtractor:
             last_err = None
             for attempt in range(3):
                 try:
-                    # Refresh the page-derived HLS URL on each transient retry.
-                    fresh_info = self._fetch_vidara_info(url) or vidara_info
+                    # Refresh the page-derived HLS URL on each retry.
+                    fresh_info = vidara_info if attempt == 0 else (self._fetch_vidara_info(url) or vidara_info)
                     return self._download_vidara(fresh_info, outdir, preferred)
                 except Exception as e:
                     last_err = e
-                    if attempt < 2 and _is_transient_error(e):
+                    if attempt < 2 and (_is_transient_error(e) or "404" in str(e) or "403" in str(e)):
                         time.sleep(2)
                         continue
                     raise
@@ -896,6 +896,8 @@ class UniversalExtractor:
                     "no_warnings": True, "socket_timeout": 30,
                     "http_headers": {"Referer": vidara_info.get("referer", "https://vidvara.cc/")}
                 }
+                if getattr(settings, "ytdlp_proxy", ""):
+                    opts["proxy"] = settings.ytdlp_proxy
                 from yt_dlp import YoutubeDL
                 with YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(stream_url, download=False)
@@ -938,6 +940,8 @@ class UniversalExtractor:
                     "no_warnings": True, "socket_timeout": 30,
                     "http_headers": {"Referer": animotv_info.get("referer", "https://megaplay.buzz/")}
                 }
+                if getattr(settings, "ytdlp_proxy", ""):
+                    opts["proxy"] = settings.ytdlp_proxy
                 from yt_dlp import YoutubeDL
                 with YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(stream_url, download=False)

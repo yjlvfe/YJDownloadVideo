@@ -37,3 +37,8 @@ Multi-platform social media video and media download service backed by Docker an
 - Do not claim WARP is faster than NordVPN without comparable same-URL measurements. Do not make WARP permanent as a product decision without Yousef's explicit approval.
 - Treat transient Redis socket timeouts and empty downloader artifacts as retryable transport failures; use bounded Redis socket/retry settings and retry the same yt-dlp request before marking a job failed. Do not rotate WARP or NordVPN for destination-level HTTP errors.
 - Keep provider-specific permanent errors non-retryable; retries are for transport/empty-artifact failures only, so one blocked site does not create a request storm for every site.
+
+## NordVPN Device Limit & Anti-Churn Invariant
+- This stack uses exactly 1 container (`yjdownloadvideo-nordvpn-1`) out of the host's strict 7-container cap.
+- Strictly forbidden for any agent to spawn extra or ephemeral test containers. All testing must use `docker exec` or existing service network (`socks5://nordvpn:1080`).
+- If recreating the container, the existing device fingerprint must be preserved or obsolete device registrations must be cleaned from Nord Account before launch.

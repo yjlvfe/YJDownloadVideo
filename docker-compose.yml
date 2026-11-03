@@ -133,6 +133,4 @@ services:
 
 volumes:
   redis_data_novpn:
-  warp_data:
-  warp_config:
   tba_data_novpn:

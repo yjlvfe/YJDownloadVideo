@@ -7,6 +7,7 @@
   - SOCKS proxy connectivity verified healthy.
   - Recent jobs completed successfully.
 - **2026-11-04:** Synchronizing latest updates to GitHub:
-  - Pushing local commits to `origin/main` (`yjlvfe/YJSocialMediaDownload`).
-  - Preserving historical August state on `yjlvfe/YJDownloadVideo` via `backup/legacy-august-2026`.
-  - Synchronizing `main` branch on `yjlvfe/YJDownloadVideo` to align both repositories with the current server codebase.
+  - Pushed local commits to `origin/main` (`yjlvfe/YJSocialMediaDownload`).
+  - Preserved historical August state on `yjlvfe/YJDownloadVideo` via `backup/legacy-august-2026`.
+  - Synchronized `main` branch on `yjlvfe/YJDownloadVideo` to align both repositories with current server codebase.
+  - Configured `origin` remote with dual-push URLs (`YJDownloadVideo` primary + `YJSocialMediaDownload` mirror) and installed automatic `post-commit` hook for zero-touch auto-pushing.

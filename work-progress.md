@@ -17,3 +17,11 @@
   - Added sliding-window aggregate speed and ETA calculator in `_ProgressWriter` to accurately measure cumulative byte deltas over time across all concurrent connections.
   - Switched NordVPN in-place target to Frankfurt (`CONNECT: Frankfurt`) for DE-CIX media peering.
   - Verified real-world download of 458.5 MB HLS media (`https://laroza1.lat/video.php?vid=85d3395d3`): completion time dropped from 270s (4.5 min) to 66.14s (1.1 min), transfer time 44s at 10.62 MB/s (peak 26.05 MB/s), ffprobe validated stream integrity.
+- **2026-11-05:** Resolved the 99% stall/hang issue and boosted download/upload pipeline:
+  - Diagnosed root cause of 99% freeze: in 64-thread concurrent HLS downloads (595 fragments), 1 or 2 straggler segments stalled on congested proxy sockets with `socket_timeout: 35` and `http_chunk_size: 10MB`, blocking completion for 70+ seconds while percentage was clamped at 99%.
+  - Implemented dynamic **Straggler Hedge** in `app/extractor.py` (`_install_straggler_hedge`): when the tail (>95%) exceeds 4.0s, a fast parallel hedged HTTP request fetches the delayed segment via clean proxy connection, bypassing stalled sockets.
+  - Added single-pass faststart optimization (`_is_faststart_mp4` and `_ensure_faststart_mp4`): verified top-level MP4 box layout (<0.1ms) and mapped `FixupM3u8` to `-movflags +faststart`, eliminating redundant 4-second FFmpeg remux passes.
+  - Unified stream probing (`_probe_streams`) to execute a single `ffprobe` call for video and audio.
+  - Capped download progress in `app/worker.py` at 98% until the final segment arrives (99%), and preserved file size metadata through the `preparing` stage in `_ProgressWriter`.
+  - Converted `_video_meta` in `app/bot.py` to non-blocking `asyncio.to_thread` and implemented smooth two-phase upload accounting (0..40% HTTP local TBA + 40..99% MTProto cloud).
+  - Validated live production download of `https://laroza1.lat/video.php?vid=85d3395d3`: 458.48 MB (480,752,738 bytes, 595 frags) downloaded in 75.21s at 6.10 MB/s, stragglers hedged at 4.0s without hanging, stream integrity verified with ffprobe, cleanup verified.

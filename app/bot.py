@@ -715,14 +715,21 @@ async def watch_and_deliver(chat_id: int, jid: str, status_msg=None):
     """رسالة حالة واحدة حية: تحميل % كل ثانية ← رفع % كل ثانية ← الملف ← تختفي.
 
     (2026-08: بلا طابور — الـ worker يعالج 20 مهمة متوازية، التحميل يبدأ فورًا.)"""
-    up_state = {"pct": 0}
+    up_state = {"pct": 0, "done_bytes": 0, "http_done_at": 0.0, "started_at": time.monotonic()}
 
     def sync_up_cb(current: int, total: int):
+        up_state["done_bytes"] = current
         if total:
-            up_state["pct"] = int(current / total * 100)
+            if settings.telegram_bot_api_base:
+                raw_pct = min(100, int(current / total * 100))
+                up_state["pct"] = min(40, int(raw_pct * 0.40))
+                if current >= total and up_state["http_done_at"] == 0.0:
+                    up_state["http_done_at"] = time.monotonic()
+            else:
+                up_state["pct"] = min(99, int(current / total * 100))
         elif current:
             # حجم غير معروف — يُحدث كل 5MB من progress_request
-            up_state["pct"] = min(99, current // (5 * 1024 * 1024) * 5)
+            up_state["pct"] = min(95, current // (5 * 1024 * 1024) * 5)
 
     bot = _bot_instance(progress_cb=sync_up_cb)
     try:
@@ -753,7 +760,6 @@ async def watch_and_deliver(chat_id: int, jid: str, status_msg=None):
                     text = "⚡ جارٍ الاتصال بالموقع وتجهيز المقطع..."
                 elif stage == "preparing":
                     # ⚙️ تجهيز = دمج ffmpeg — يُقدّر الوقت من حجم الملف وسرعة HDD (~40MB/s)
-                    import time
                     now = time.monotonic()
                     if prep_start == 0.0:
                         prep_start = now
@@ -867,7 +873,7 @@ async def watch_and_deliver(chat_id: int, jid: str, status_msg=None):
                         await bot.send_audio(chat_id, InputFile(f, read_file_handle=False), caption=f"🎵 {caption}")
                 else:
                     # 🎬 إرسال فيديو متدفق أصلي دائماً (حتى 2GB) — ليس ملف/مستند أبداً
-                    meta = _video_meta(path, Path(path).parent)
+                    meta = await asyncio.to_thread(_video_meta, path, Path(path).parent)
                     thumb_path = meta.pop("thumbnail", None)
                     with open(path, "rb") as f:
                         if thumb_path:
@@ -884,9 +890,17 @@ async def watch_and_deliver(chat_id: int, jid: str, status_msg=None):
             send_task = asyncio.create_task(do_send())
             last_up = -1
             while not send_task.done():
-                pct = up_state["pct"]
+                if settings.telegram_bot_api_base and up_state["http_done_at"] > 0.0 and size:
+                    mtproto_elapsed = max(0.0, time.monotonic() - up_state["http_done_at"])
+                    est_mtproto_sec = max(4.0, size / (10 * 1024 * 1024))
+                    ratio = mtproto_elapsed / (mtproto_elapsed + est_mtproto_sec * 0.45)
+                    pct = min(99, max(up_state["pct"], 40 + int(ratio * 59)))
+                else:
+                    pct = up_state["pct"]
                 if pct != last_up and bar is not None:
-                    bar = await _edit_progress(bar, f"⬆️ {_progress_bar(pct)} {pct}% — جارٍ الرفع")
+                    est_uploaded = int(size * pct / 100) if size else up_state["done_bytes"]
+                    size_info = f" ({_fmt_mb(est_uploaded)} / {size_str})" if size and pct > 0 else f" ({size_str})"
+                    bar = await _edit_progress(bar, f"⬆️ {_progress_bar(pct)} {pct}%{size_info} — جارٍ الرفع")
                     last_up = pct
                 await asyncio.sleep(1)
             try:

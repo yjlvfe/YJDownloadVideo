@@ -24,6 +24,8 @@ class _ProgressWriter:
         self._lock = threading.Lock()
         self._start_time = time.monotonic()
         self._samples = deque()  # (timestamp, bytes)
+        self._last_size = 0
+        self._last_total = 0
 
     def __call__(self, stage, pct=0, **fields):
         with self._lock:
@@ -31,6 +33,10 @@ class _ProgressWriter:
             if stage == 'downloading':
                 done = fields.get('size', 0)
                 if done > 0:
+                    self._last_size = done
+                    tot = fields.get('total', 0)
+                    if tot > 0:
+                        self._last_total = tot
                     self._samples.append((now, done))
                     # الاحتفاظ بعينات آخر ثانيتين لحساب سرعة تدفق حقيقية وتفادي تذبذب الخيوط المتزامنة
                     while self._samples and (now - self._samples[0][0]) > 2.0:
@@ -55,6 +61,12 @@ class _ProgressWriter:
                 if self._last_write is not None and now - self._last_write < 0.5:
                     return
                 self._last_write = now
+            elif stage == 'preparing':
+                if not fields.get('size') and self._last_size > 0:
+                    fields['size'] = self._last_size
+                if not fields.get('total') and self._last_total > 0:
+                    fields['total'] = self._last_total
+
             write_status(self.job_id, stage, pct, **fields)
 
 def _owner_cookies(owner_key: str) -> str | None:
@@ -92,22 +104,33 @@ def process_job(job_id):
             # 🎯 نسبة تقدّم ذكية وسلسة:
             # 1. إذا كان تحميل أجزاء (HLS / DASH) نعتمد على نسبة الأجزاء المكتملة
             # 2. إذا كان الحجم الكلي معلوماً، نعتمد على done / total
-            # 3. نضمن ألا يتجمد عند 0% لحظة وصول أول بايت (max 1%)
+            # 3. لا نثبت عند 99% أثناء تحميل الأجزاء المتبقية بل نتدرج حتى 98% ثم 99% عند آخر جزء
             pct = 0
             if frag_count and frag_index is not None and frag_count > 0:
-                pct = max(1, min(99, int((frag_index + 1) / frag_count * 100)))
+                raw_pct = int((frag_index + 1) / frag_count * 100)
+                if (frag_index + 1) < frag_count:
+                    pct = max(1, min(98, raw_pct))
+                else:
+                    pct = 99
             elif total > 0 and done > 0:
-                pct = max(1, min(99, int(done / total * 100)))
+                raw_pct = int(done / total * 100)
+                if done < total:
+                    pct = max(1, min(98, raw_pct))
+                else:
+                    pct = 99
             else:
                 pct_str = (d.get('_percent_str') or '').strip().rstrip('%')
                 try:
-                    pct = max(1 if done > 0 else 0, min(99, int(float(pct_str))))
+                    raw_pct = int(float(pct_str))
+                    pct = max(1 if done > 0 else 0, min(98, raw_pct))
                 except (ValueError, TypeError):
                     pct = 1 if done > 0 else 0
 
             progress("downloading", pct, size=done, total=total, speed=int(speed), eta=int(eta))
         elif d['status'] in ('finished', 'post-processing'):
-            progress("preparing", 100)
+            done = int(d.get('downloaded_bytes') or d.get('total_bytes') or 0)
+            total = int(d.get('total_bytes') or d.get('downloaded_bytes') or 0)
+            progress("preparing", 100, size=done, total=total)
 
     ex = UniversalExtractor(
         cookies_file=_owner_cookies(owner_key),

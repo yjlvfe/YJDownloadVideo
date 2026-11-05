@@ -8,12 +8,15 @@ from __future__ import annotations
 
 
 import json
+import logging
 import os
 import re
 import shutil
 import socket
+import struct
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -22,6 +25,8 @@ from urllib.parse import urljoin, urlparse, unquote
 import httpx
 
 from .config import ffmpeg_location, settings
+
+log = logging.getLogger("extractor")
 BROWSER_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -100,6 +105,148 @@ def _unpack_dean_edwards(payload: str) -> str:
         val = k[c] if c < len(k) and k[c] else word
         p = re.sub(r"\b" + re.escape(word) + r"\b", val, p)
     return p
+
+
+def _is_faststart_mp4(path: Path | str) -> bool:
+    """يفحص ترتيب حاويات MP4 (boxes): هل moov قبل mdat لتشغيل متدفق فوري دون قراءة الملف في الذاكرة."""
+    try:
+        p = Path(path)
+        if not p.is_file() or p.stat().st_size < 32:
+            return False
+        with open(p, "rb") as f:
+            file_size = p.stat().st_size
+            offset = 0
+            while offset + 8 <= file_size:
+                f.seek(offset)
+                hdr = f.read(8)
+                if len(hdr) < 8:
+                    break
+                box_size, box_type = struct.unpack(">I4s", hdr)
+                if box_type == b"moov":
+                    return True
+                if box_type == b"mdat":
+                    return False
+                if box_size == 1:
+                    ext_hdr = f.read(8)
+                    if len(ext_hdr) < 8:
+                        break
+                    box_size = struct.unpack(">Q", ext_hdr)[0]
+                    if box_size < 16:
+                        break
+                    offset += box_size
+                elif box_size == 0 or box_size < 8:
+                    break
+                else:
+                    offset += box_size
+        return False
+    except Exception:
+        return False
+
+
+def _ensure_faststart_mp4(path: Path | str) -> None:
+    """يضمن وجود moov في بداية ملف MP4 (+faststart) لتقديم الثواني بسلاسة في تيليجرام.
+    إذا كان الملف جاهزاً بالفعل يتجاوز التحويل فوراً دون تشغيل ffmpeg ثانٍ أو استهلاك I/O."""
+    try:
+        p = Path(path)
+        if p.suffix.lower() != ".mp4" or not p.is_file():
+            return
+        if _is_faststart_mp4(p):
+            return
+        fixed_tmp = p.with_suffix(".faststart.tmp.mp4")
+        res = subprocess.run(
+            [ffmpeg_location() or "ffmpeg", "-y", "-v", "error", "-i", str(p),
+             "-c", "copy", "-movflags", "+faststart", str(fixed_tmp)],
+            capture_output=True, timeout=120
+        )
+        if res.returncode == 0 and fixed_tmp.is_file() and fixed_tmp.stat().st_size > 1024:
+            fixed_tmp.replace(p)
+    except Exception:
+        pass
+
+
+def _probe_streams(path: Path | str) -> tuple[bool, bool]:
+    """يفحص وجود تدفق فيديو وتدفق صوتي بأمر ffprobe موحد لتوفير نصف وقت الاستدعاء."""
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True, timeout=30,
+        )
+        codecs = set(r.stdout.strip().splitlines())
+        return ("video" in codecs, "audio" in codecs)
+    except Exception:
+        return (True, True)
+
+
+def _install_straggler_hedge():
+    """يثبت معالج تخفيف بطء الأجزاء الأخيرة (Straggler Hedge) في yt-dlp لمنع التعليق عند 99%."""
+    try:
+        from yt_dlp.downloader.fragment import FragmentFD
+        if getattr(FragmentFD, "_straggler_hedge_installed", False):
+            return
+
+        _orig_download_fragment = getattr(FragmentFD, "_download_fragment", None)
+        if not _orig_download_fragment:
+            return
+
+        def _hedged_download_fragment(self, ctx, frag_url, info_dict, headers=None, request_data=None):
+            total_frags = ctx.get('total_frags') or 0
+            if total_frags <= 1:
+                return _orig_download_fragment(self, ctx, frag_url, info_dict, headers=headers, request_data=request_data)
+
+            fragment_filename = '%s-Frag%d' % (ctx['tmpfilename'], ctx['fragment_index'])
+            frag_idx = ctx.get('fragment_index', 0)
+            is_tail = total_frags > 10 and frag_idx >= int(total_frags * 0.95)
+            hedge_delay = 4.0 if is_tail else 10.0
+
+            done_event = threading.Event()
+            res = [False]
+            exc: list[Exception | None] = [None]
+
+            def _primary_worker():
+                try:
+                    res[0] = _orig_download_fragment(self, ctx, frag_url, info_dict, headers=headers, request_data=request_data)
+                except Exception as e:
+                    exc[0] = e
+                finally:
+                    done_event.set()
+
+            t = threading.Thread(target=_primary_worker, daemon=True)
+            t.start()
+
+            finished = done_event.wait(timeout=hedge_delay)
+            if finished:
+                if exc[0] is not None:
+                    raise exc[0]
+                return res[0]
+
+            log.warning("Straggler detected on frag %s/%s (> %ss), launching hedge request", frag_idx, total_frags, hedge_delay)
+            try:
+                req_headers = dict(headers or info_dict.get('http_headers') or {})
+                timeout = httpx.Timeout(connect=3.5, read=4.5, write=4.5, pool=3.5)
+                with httpx.Client(follow_redirects=True, timeout=timeout, proxy=settings.ytdlp_proxy or None) as client:
+                    resp = client.get(frag_url, headers=req_headers)
+                    if resp.status_code in (200, 206) and len(resp.content) > 0:
+                        tmp_hedge = Path(fragment_filename + ".hedge.tmp")
+                        tmp_hedge.parent.mkdir(parents=True, exist_ok=True)
+                        tmp_hedge.write_bytes(resp.content)
+                        tmp_hedge.replace(fragment_filename)
+                        ctx['fragment_filename_sanitized'] = fragment_filename
+                        log.info("Hedge request saved frag %s/%s (%s bytes) before primary!", frag_idx, total_frags, len(resp.content))
+                        return True
+            except Exception as he:
+                log.debug("Hedge request for frag %s did not succeed: %s", frag_idx, he)
+
+            done_event.wait(timeout=max(1.0, float(self.params.get('socket_timeout', 6)) + 2.0))
+            if exc[0] is not None:
+                raise exc[0]
+            return res[0]
+
+        setattr(FragmentFD, "_download_fragment", _hedged_download_fragment)
+        setattr(FragmentFD, "_straggler_hedge_installed", True)
+    except Exception as ie:
+        log.warning("Could not install straggler hedge: %s", ie)
+
+
 class UniversalExtractor:
     """المحرك الشامل: أي رابط ← فيديو ← ملف."""
 
@@ -118,6 +265,7 @@ class UniversalExtractor:
         self.request_timeout = request_timeout
         self.referer_headers = referer_headers
         self._cookies_tmp: list[str] = []
+        _install_straggler_hedge()
 
     # ------------------------------------------------------------------
     # واجهة عامة
@@ -540,19 +688,21 @@ class UniversalExtractor:
         return None
 
     def _download_animotv(self, info: dict, outdir: Path, preferred: str = "best") -> dict:
-        import re, subprocess
+        import re
         from yt_dlp import YoutubeDL
 
         safe_title = re.sub(r'[\\/*?:"<>|]', "_", info["title"])[:100].strip() or "video"
         opts = self._base_ytdlp_opts(outdir, preferred)
+        opts.pop("http_chunk_size", None)
         opts["outtmpl"] = str(outdir / f"{safe_title}.%(ext)s")
         opts["http_headers"]["Referer"] = info.get("referer", "https://megaplay.buzz/")
         opts["hls_prefer_native"] = True
         opts["concurrent_fragment_downloads"] = max(1, settings.max_fragment_connections_per_job)
         opts["skip_unavailable_fragments"] = False
-        opts["socket_timeout"] = 35
-        opts["fragment_retries"] = 10
-        opts["retries"] = 10
+        opts["continuedl"] = False
+        opts["socket_timeout"] = 10
+        opts["fragment_retries"] = 5
+        opts["retries"] = 5
 
         with YoutubeDL(opts) as ydl:
             res_info = ydl.extract_info(info["streaming_url"], download=True)
@@ -563,18 +713,8 @@ class UniversalExtractor:
 
         path = max(files, key=lambda p: p.stat().st_mtime)
 
-        if preferred != "audio" and path.suffix.lower() == ".mp4":
-            try:
-                fixed_tmp = path.with_suffix(".faststart.tmp.mp4")
-                res = subprocess.run(
-                    [ffmpeg_location() or "ffmpeg", "-y", "-v", "error", "-i", str(path),
-                     "-c", "copy", "-movflags", "+faststart", str(fixed_tmp)],
-                    capture_output=True, timeout=120
-                )
-                if res.returncode == 0 and fixed_tmp.is_file() and fixed_tmp.stat().st_size > 1024:
-                    fixed_tmp.replace(path)
-            except Exception:
-                pass
+        if preferred != "audio":
+            _ensure_faststart_mp4(path)
 
         return {
             "path": str(path),
@@ -585,19 +725,21 @@ class UniversalExtractor:
         }
 
     def _download_vidara(self, info: dict, outdir: Path, preferred: str = "best") -> dict:
-        import re, subprocess
+        import re
         from yt_dlp import YoutubeDL
 
         safe_title = re.sub(r'[\\/*?:"<>|]', "_", info["title"])[:100].strip() or "video"
         opts = self._base_ytdlp_opts(outdir, preferred)
+        opts.pop("http_chunk_size", None)
         opts["outtmpl"] = str(outdir / f"{safe_title}.%(ext)s")
         opts["http_headers"]["Referer"] = info.get("referer", "https://vidvara.cc/")
         opts["hls_prefer_native"] = True
         opts["concurrent_fragment_downloads"] = max(1, settings.max_fragment_connections_per_job)
         opts["skip_unavailable_fragments"] = False
-        opts["socket_timeout"] = 35
-        opts["fragment_retries"] = 10
-        opts["retries"] = 10
+        opts["continuedl"] = False
+        opts["socket_timeout"] = 10
+        opts["fragment_retries"] = 5
+        opts["retries"] = 5
 
         with YoutubeDL(opts) as ydl:
             res_info = ydl.extract_info(info["streaming_url"], download=True)
@@ -608,18 +750,8 @@ class UniversalExtractor:
 
         path = max(files, key=lambda p: p.stat().st_mtime)
 
-        if preferred != "audio" and path.suffix.lower() == ".mp4":
-            try:
-                fixed_tmp = path.with_suffix(".faststart.tmp.mp4")
-                res = subprocess.run(
-                    [ffmpeg_location() or "ffmpeg", "-y", "-v", "error", "-i", str(path),
-                     "-c", "copy", "-movflags", "+faststart", str(fixed_tmp)],
-                    capture_output=True, timeout=120
-                )
-                if res.returncode == 0 and fixed_tmp.is_file() and fixed_tmp.stat().st_size > 1024:
-                    fixed_tmp.replace(path)
-            except Exception:
-                pass
+        if preferred != "audio":
+            _ensure_faststart_mp4(path)
 
         return {
             "path": str(path),
@@ -734,20 +866,8 @@ class UniversalExtractor:
                 files = [p for p in outdir.iterdir() if p.is_file() and p.name != "photos.json"]
                 if files:
                     path = max(files, key=lambda p: p.stat().st_mtime)
-                    if preferred != "audio" and path.suffix.lower() == ".mp4":
-                        try:
-                            import subprocess
-                            from app.extractor import ffmpeg_location
-                            fixed_tmp = path.with_suffix(".faststart.tmp.mp4")
-                            res = subprocess.run(
-                                [ffmpeg_location() or "ffmpeg", "-y", "-v", "error", "-i", str(path),
-                                 "-c", "copy", "-movflags", "+faststart", str(fixed_tmp)],
-                                capture_output=True, timeout=120
-                            )
-                            if res.returncode == 0 and fixed_tmp.is_file() and fixed_tmp.stat().st_size > 1024:
-                                fixed_tmp.replace(path)
-                        except Exception:
-                            pass
+                    if preferred != "audio":
+                        _ensure_faststart_mp4(path)
                     return {
                         "path": str(path),
                         "ext": path.suffix.lstrip("."),
@@ -852,19 +972,7 @@ class UniversalExtractor:
                                 for chunk in resp.iter_bytes(65536):
                                     f.write(chunk)
                             if fpath.stat().st_size > 1024:
-                                # تطبيق faststart على التنزيل المباشر أيضاً
-                                try:
-                                    import subprocess
-                                    fixed_tmp = fpath.with_suffix(".faststart.tmp.mp4")
-                                    subprocess.run(
-                                        ["ffmpeg", "-y", "-v", "error", "-i", str(fpath),
-                                         "-c", "copy", "-movflags", "+faststart", str(fixed_tmp)],
-                                        capture_output=True, timeout=120
-                                    )
-                                    if fixed_tmp.is_file() and fixed_tmp.stat().st_size > 1024:
-                                        fixed_tmp.replace(fpath)
-                                except Exception:
-                                    pass
+                                _ensure_faststart_mp4(fpath)
                                 return {
                                     "path": str(fpath),
                                     "ext": "mp4",
@@ -1080,11 +1188,12 @@ class UniversalExtractor:
             "noplaylist": True,
             "quiet": True,
             "no_warnings": True,
+            "noprogress": True,
             # لا تستخدم restrictfilenames: يمسح الحروف العربية/يونيكود من أسماء الملفات
             "restrictfilenames": False,
-            "socket_timeout": 30,
-            "retries": 3,
-            "fragment_retries": 3,
+            "socket_timeout": 10,
+            "retries": 5,
+            "fragment_retries": 10,
             "http_headers": _ytdlp_headers(),
             "format_sort": ["res", "ext:mp4:m4a", "vcodec:h264"],
             "ffmpeg_location": ffmpeg_location(),
@@ -1095,7 +1204,11 @@ class UniversalExtractor:
             "http_chunk_size": 10485760,
             "js_runtimes": {"quickjs": {}},
             "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
-            "postprocessor_args": {"Merger": ["-movflags", "+faststart"]},
+            "postprocessor_args": {
+                "Merger": ["-movflags", "+faststart"],
+                "FixupM3u8": ["-movflags", "+faststart"],
+                "FixupM4a": ["-movflags", "+faststart"],
+            },
             # VPN provides the egress region; do not advertise a stale fixed country.
             "geo_bypass": False,
         }
@@ -1188,9 +1301,10 @@ class UniversalExtractor:
 
         if path is None or not path.is_file():
             raise DownloadError("لم يُنشأ ملف")
-        if not _has_audio(path):
+        has_v, has_a = _probe_streams(path)
+        if not has_a:
             raise DownloadError("المقطع المتاح بدون صوت (لا يوجد تدفق صوتي في المصدر)")
-        if preferred != "audio" and not _has_video(path):
+        if preferred != "audio" and not has_v:
             # يمنع إرسال ملف صوتي كمقطع فيديو فاضي (مشكلة إنستغرام)
             raise DownloadError("المقطع المتاح بدون فيديو (لا يوجد تدفق فيديو في المصدر)")
         # نظّف أي ملفات يتيمة في مجلد المهمة (بقايا محاولات فاشلة)
@@ -1202,21 +1316,8 @@ class UniversalExtractor:
                     pass
 
         # 🚀 إصلاح التنقل والتقديم في الثواني لجميع مقاطع الفيديو:
-        # إزالة التجزئة (De-fragmentation) ونقل moov atom إلى بداية الملف (+faststart)
-        # هذا يمنع مشكلة إعادة تشغيل الفيديو من البداية عند تقديم الثواني في تيليجرام
-        if preferred != "audio" and path.suffix.lower() == ".mp4":
-            try:
-                import subprocess
-                fixed_tmp = path.with_suffix(".faststart.tmp.mp4")
-                res = subprocess.run(
-                    [ffmpeg_location() or "ffmpeg", "-y", "-v", "error", "-i", str(path),
-                     "-c", "copy", "-movflags", "+faststart", str(fixed_tmp)],
-                    capture_output=True, timeout=120
-                )
-                if res.returncode == 0 and fixed_tmp.is_file() and fixed_tmp.stat().st_size > 1024:
-                    fixed_tmp.replace(path)
-            except Exception:
-                pass
+        if preferred != "audio":
+            _ensure_faststart_mp4(path)
 
         if self.max_duration and info.get("duration") and info["duration"] > self.max_duration:
             raise DownloadError("مدة الفيديو تتجاوز الحد المسموح")
@@ -1238,25 +1339,9 @@ class UniversalExtractor:
 # ---------------------------------------------------------------------------
 def _has_audio(path) -> bool:
     """يفحص وجود تدفق صوتي في الملف عبر ffprobe."""
-    try:
-        r = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "a",
-             "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(path)],
-            capture_output=True, text=True, timeout=30,
-        )
-        return bool(r.stdout.strip())
-    except Exception:  # noqa: BLE001
-        return True  # عند عدم توفر ffprobe لا نمنع التحميل
+    return _probe_streams(path)[1]
 
 
 def _has_video(path) -> bool:
     """يفحص وجود تدفق فيديو في الملف عبر ffprobe (يمنع إرسال ملفات صوتية كمقاطع فاضية)."""
-    try:
-        r = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "v",
-             "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(path)],
-            capture_output=True, text=True, timeout=30,
-        )
-        return bool(r.stdout.strip())
-    except Exception:  # noqa: BLE001
-        return True
+    return _probe_streams(path)[0]

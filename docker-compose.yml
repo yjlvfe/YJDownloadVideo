@@ -5,7 +5,7 @@ services:
     cap_add: [NET_ADMIN, NET_RAW, SYS_MODULE]
     environment:
       TOKEN: ${NORDVPN_TOKEN}
-      CONNECT: Germany
+      CONNECT: Frankfurt
       TECHNOLOGY: NORDLYNX
       DNS: 127.0.0.11
     healthcheck:

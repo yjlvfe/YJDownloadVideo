@@ -1,7 +1,8 @@
 import time, shutil
 import logging
+import threading
+from collections import deque
 
-log = logging.getLogger("worker")
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
@@ -10,6 +11,51 @@ from .db import SessionLocal, Job, utcnow
 from .security import make_token
 from .extractor import UniversalExtractor
 from .status import write_status
+
+log = logging.getLogger("worker")
+
+
+class _ProgressWriter:
+    """Limit frequent progress writes without delaying stage transitions, and calculate true aggregate throughput."""
+
+    def __init__(self, job_id):
+        self.job_id = job_id
+        self._last_write = None
+        self._lock = threading.Lock()
+        self._start_time = time.monotonic()
+        self._samples = deque()  # (timestamp, bytes)
+
+    def __call__(self, stage, pct=0, **fields):
+        with self._lock:
+            now = time.monotonic()
+            if stage == 'downloading':
+                done = fields.get('size', 0)
+                if done > 0:
+                    self._samples.append((now, done))
+                    # الاحتفاظ بعينات آخر ثانيتين لحساب سرعة تدفق حقيقية وتفادي تذبذب الخيوط المتزامنة
+                    while self._samples and (now - self._samples[0][0]) > 2.0:
+                        self._samples.popleft()
+                    if len(self._samples) >= 2:
+                        dt = now - self._samples[0][0]
+                        db = done - self._samples[0][1]
+                        if dt >= 0.25 and db > 0:
+                            agg_speed = int(db / dt)
+                            # في تحميل الأجزاء المتزامنة (HLS)، speed من yt-dlp تمثل سرعة خيط واحد فقط
+                            # فنعتمد على سرعة التدفق الإجمالية لكافة الوصلات المتزامنة
+                            fields['speed'] = max(agg_speed, int(fields.get('speed', 0)))
+
+                # تقدير دقيق ومستقر للوقت المتبقي (ETA) لتفادي تشوه HLS عند تعدد الوصلات
+                reported_eta = fields.get('eta', 0)
+                elapsed = now - self._start_time
+                if pct > 0 and pct < 100 and elapsed > 2.0:
+                    calc_eta = int((100 - pct) * elapsed / pct)
+                    if not reported_eta or reported_eta > max(30, calc_eta * 2.5):
+                        fields['eta'] = calc_eta
+
+                if self._last_write is not None and now - self._last_write < 0.5:
+                    return
+                self._last_write = now
+            write_status(self.job_id, stage, pct, **fields)
 
 def _owner_cookies(owner_key: str) -> str | None:
     """ملف كوكيز خاص بالمستخدم إن وُجد (من البوت: data/cookies/<owner_key>.txt)."""
@@ -30,6 +76,7 @@ def process_job(job_id):
     outdir.mkdir(exist_ok=True)
     write_status(job_id, "connecting", 0, message="جارٍ الاتصال بالسيرفر وجلب المقطع...")
 
+    progress = _ProgressWriter(job_id)
     # التقدم يُكتب في status.json فقط — لا مساس بـ SQLite عند كل نبضة
     # (كان commit لكل حدث تقدم ~1/ثانية = تنافس قفل بلا أي فائدة)
     def hook(d):
@@ -58,9 +105,9 @@ def process_job(job_id):
                 except (ValueError, TypeError):
                     pct = 1 if done > 0 else 0
 
-            write_status(job_id, "downloading", pct, size=done, total=total, speed=int(speed), eta=int(eta))
+            progress("downloading", pct, size=done, total=total, speed=int(speed), eta=int(eta))
         elif d['status'] in ('finished', 'post-processing'):
-            write_status(job_id, "preparing", 100)
+            progress("preparing", 100)
 
     ex = UniversalExtractor(
         cookies_file=_owner_cookies(owner_key),

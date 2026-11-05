@@ -220,41 +220,56 @@ class UniversalExtractor:
 
                             # جمع روابط الصفحات الفرعية (play.php / embed.php أو أية إطارات)
                             all_htmls = [main_html]
-                            sub_links = []
-                            if any(k in final_url for k in ("watch.php", "video.php", "view.php")) and "vid=" in final_url:
-                                for page_type in ("play.php", "embed.php", "watch.php", "video.php"):
-                                    for orig_type in ("watch.php", "video.php", "view.php", "play.php", "embed.php"):
-                                        if orig_type in final_url:
-                                            sub_links.append(final_url.replace(orig_type, page_type))
-                            for sm in re.finditer(r"href=['\"]([^'\"]*(?:play|embed)\.php[^'\"]*)['\"]", main_html, re.I):
-                                sub_links.append(urljoin(final_url, sm.group(1)))
-                            for sm in re.finditer(r"<(?:iframe|source)[^>]+src=['\"]([^'\"]+)['\"]", main_html, re.I):
-                                sub_links.append(urljoin(final_url, sm.group(1)))
-                            for sm in re.finditer(r"data-embed=['\"]([^'\"]+)['\"]", main_html, re.I):
-                                sub_links.append(sm.group(1))
+                            # فحص الصفحة الأساسية أولاً
+                            m = re.search(r"(?:vidara\.(?:to|so|cc|net)|vidvara\.(?:cc|to|so)|4kvideo\.cc)/(?:v|e)/([a-zA-Z0-9]+)", main_html, re.I)
 
-                            for sl in set(sub_links[:15]):
-                                p_parsed = urlparse(sl)
-                                if p_parsed.netloc == urlparse(final_url).netloc and any(k in sl for k in ("play.php", "embed.php", "video.php", "watch.php")):
-                                    try:
-                                        r_sub = client.get(sl)
-                                        if r_sub.status_code == 200:
-                                            all_htmls.append(r_sub.text)
-                                            # تتبع أية iframes بداخل الصفحات الفرعية
-                                            for ifr in re.findall(r"<(?:iframe|source)[^>]+src=['\"]([^'\"]+)['\"]", r_sub.text, re.I):
-                                                ifr_url = urljoin(sl, ifr)
-                                                if ifr_url not in sub_links:
-                                                    try:
-                                                        r_ifr = client.get(ifr_url, headers={"Referer": sl, "User-Agent": headers["User-Agent"]})
-                                                        if r_ifr.status_code == 200:
-                                                            all_htmls.append(r_ifr.text)
-                                                    except Exception:
-                                                        pass
-                                    except Exception:
-                                        pass
+                            if not m:
+                                sub_links = []
+                                if any(k in final_url for k in ("watch.php", "video.php", "view.php")) and "vid=" in final_url:
+                                    for page_type in ("play.php", "embed.php", "watch.php", "video.php"):
+                                        for orig_type in ("watch.php", "video.php", "view.php", "play.php", "embed.php"):
+                                            if orig_type in final_url:
+                                                sub_links.append(final_url.replace(orig_type, page_type))
+                                for sm in re.finditer(r"href=['\"]([^'\"]*(?:play|embed)\.php[^'\"]*)['\"]", main_html, re.I):
+                                    sub_links.append(urljoin(final_url, sm.group(1)))
+                                for sm in re.finditer(r"<(?:iframe|source)[^>]+src=['\"]([^'\"]+)['\"]", main_html, re.I):
+                                    sub_links.append(urljoin(final_url, sm.group(1)))
+                                for sm in re.finditer(r"data-embed=['\"]([^'\"]+)['\"]", main_html, re.I):
+                                    sub_links.append(sm.group(1))
+
+                                # ترتيب الروابط مع الحفاظ على الأسبقية (play.php و embed.php أولاً)
+                                ordered_sub_links = list(dict.fromkeys(sub_links))
+                                for sl in ordered_sub_links[:10]:
+                                    p_parsed = urlparse(sl)
+                                    if p_parsed.netloc == urlparse(final_url).netloc and any(k in sl for k in ("play.php", "embed.php", "video.php", "watch.php")):
+                                        try:
+                                            r_sub = client.get(sl)
+                                            if r_sub.status_code == 200:
+                                                all_htmls.append(r_sub.text)
+                                                m = re.search(r"(?:vidara\.(?:to|so|cc|net)|vidvara\.(?:cc|to|so)|4kvideo\.cc)/(?:v|e)/([a-zA-Z0-9]+)", r_sub.text, re.I)
+                                                if m:
+                                                    break
+                                                # تتبع أية iframes بداخل الصفحات الفرعية فقط إن لم نجد تطابقاً
+                                                for ifr in re.findall(r"<(?:iframe|source)[^>]+src=['\"]([^'\"]+)['\"]", r_sub.text, re.I):
+                                                    ifr_url = urljoin(sl, ifr)
+                                                    if ifr_url not in ordered_sub_links:
+                                                        try:
+                                                            r_ifr = client.get(ifr_url, headers={"Referer": sl, "User-Agent": headers["User-Agent"]})
+                                                            if r_ifr.status_code == 200:
+                                                                all_htmls.append(r_ifr.text)
+                                                                m = re.search(r"(?:vidara\.(?:to|so|cc|net)|vidvara\.(?:cc|to|so)|4kvideo\.cc)/(?:v|e)/([a-zA-Z0-9]+)", r_ifr.text, re.I)
+                                                                if m:
+                                                                    break
+                                                        except Exception:
+                                                            pass
+                                                if m:
+                                                    break
+                                        except Exception:
+                                            pass
 
                             combined = "\n".join(all_htmls)
-                            m = re.search(r"(?:vidara\.(?:to|so|cc|net)|vidvara\.(?:cc|to|so)|4kvideo\.cc)/(?:v|e)/([a-zA-Z0-9]+)", combined, re.I)
+                            if not m:
+                                m = re.search(r"(?:vidara\.(?:to|so|cc|net)|vidvara\.(?:cc|to|so)|4kvideo\.cc)/(?:v|e)/([a-zA-Z0-9]+)", combined, re.I)
 
                             # سيرفر Vidmoly كخيار بديل إذا لم يتوفر Vidara
                             if not m:
@@ -340,7 +355,8 @@ class UniversalExtractor:
                                             "streaming_url": stream_url,
                                             "title": page_title or (data.get("title") or "فيديو").strip(),
                                             "thumbnail": page_thumb or (data.get("thumbnail") or ""),
-                                            "referer": f"https://{domain}/"
+                                            "referer": f"https://{domain}/",
+                                            "manifest": chk_r.text
                                         }
                             except Exception:
                                 pass
@@ -532,7 +548,7 @@ class UniversalExtractor:
         opts["outtmpl"] = str(outdir / f"{safe_title}.%(ext)s")
         opts["http_headers"]["Referer"] = info.get("referer", "https://megaplay.buzz/")
         opts["hls_prefer_native"] = True
-        opts["concurrent_fragment_downloads"] = min(8, max(1, settings.max_fragment_connections_per_job))
+        opts["concurrent_fragment_downloads"] = max(1, settings.max_fragment_connections_per_job)
         opts["skip_unavailable_fragments"] = False
         opts["socket_timeout"] = 35
         opts["fragment_retries"] = 10
@@ -577,7 +593,7 @@ class UniversalExtractor:
         opts["outtmpl"] = str(outdir / f"{safe_title}.%(ext)s")
         opts["http_headers"]["Referer"] = info.get("referer", "https://vidvara.cc/")
         opts["hls_prefer_native"] = True
-        opts["concurrent_fragment_downloads"] = min(8, max(1, settings.max_fragment_connections_per_job))
+        opts["concurrent_fragment_downloads"] = max(1, settings.max_fragment_connections_per_job)
         opts["skip_unavailable_fragments"] = False
         opts["socket_timeout"] = 35
         opts["fragment_retries"] = 10
@@ -889,46 +905,52 @@ class UniversalExtractor:
         # 🎬 فحص شبكة Vidara / Vidvara / 4kvideo
         vidara_info = self._fetch_vidara_info(url)
         if vidara_info:
-            try:
-                stream_url = vidara_info["streaming_url"]
-                opts = {
-                    "quiet": True, "skip_download": True, "noplaylist": True,
-                    "no_warnings": True, "socket_timeout": 30,
-                    "http_headers": {"Referer": vidara_info.get("referer", "https://vidvara.cc/")}
-                }
-                if getattr(settings, "ytdlp_proxy", ""):
-                    opts["proxy"] = settings.ytdlp_proxy
-                from yt_dlp import YoutubeDL
-                with YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(stream_url, download=False)
-                formats = []
-                for f in (info.get("formats") or []):
-                    h = f.get("height")
-                    if h:
-                        formats.append({
-                            "id": str(h), "height": h,
-                            "label": f"{h}p / mp4",
-                            "size": f.get("filesize") or f.get("filesize_approx")
-                        })
-                if not formats:
-                    formats = [{"id": "720", "height": 720, "label": "720p / mp4", "size": None}]
-                return {
-                    "source": vidara_info.get("source", "vidara"),
-                    "title": vidara_info.get("title") or info.get("title"),
-                    "thumbnail": vidara_info.get("thumbnail") or info.get("thumbnail"),
-                    "duration": info.get("duration"),
-                    "formats": formats,
-                    "audio_size": None
-                }
-            except Exception:
-                return {
-                    "source": vidara_info.get("source", "vidara"),
-                    "title": vidara_info.get("title") or "فيديو",
-                    "thumbnail": vidara_info.get("thumbnail") or "",
-                    "duration": None,
-                    "formats": [{"id": "720", "height": 720, "label": "720p / mp4", "size": None}],
-                    "audio_size": None
-                }
+            formats = []
+            manifest = vidara_info.get("manifest")
+            if manifest:
+                for line in manifest.splitlines():
+                    res_m = re.search(r'RESOLUTION=\d+x(\d+)', line)
+                    if res_m:
+                        h = int(res_m.group(1))
+                        if not any(f["height"] == h for f in formats):
+                            formats.append({
+                                "id": str(h), "height": h,
+                                "label": f"{h}p / mp4",
+                                "size": None
+                            })
+            if not formats:
+                try:
+                    stream_url = vidara_info["streaming_url"]
+                    opts = {
+                        "quiet": True, "skip_download": True, "noplaylist": True,
+                        "no_warnings": True, "socket_timeout": 15,
+                        "http_headers": {"Referer": vidara_info.get("referer", "https://vidvara.cc/")}
+                    }
+                    if getattr(settings, "ytdlp_proxy", ""):
+                        opts["proxy"] = settings.ytdlp_proxy
+                    from yt_dlp import YoutubeDL
+                    with YoutubeDL(opts) as ydl:
+                        info = ydl.extract_info(stream_url, download=False)
+                    for f in (info.get("formats") or []):
+                        h = f.get("height")
+                        if h:
+                            formats.append({
+                                "id": str(h), "height": h,
+                                "label": f"{h}p / mp4",
+                                "size": f.get("filesize") or f.get("filesize_approx")
+                            })
+                except Exception:
+                    pass
+            if not formats:
+                formats = [{"id": "720", "height": 720, "label": "720p / mp4", "size": None}]
+            return {
+                "source": vidara_info.get("source", "vidara"),
+                "title": vidara_info.get("title") or "فيديو",
+                "thumbnail": vidara_info.get("thumbnail") or "",
+                "duration": vidara_info.get("duration"),
+                "formats": formats,
+                "audio_size": None
+            }
 
         # 🎬 فحص شبكات الأنمي (Animotvslash / Vidnest)
         animotv_info = self._fetch_animotv_info(url)
@@ -1072,6 +1094,7 @@ class UniversalExtractor:
             "buffersize": 1024 * 256,
             "http_chunk_size": 10485760,
             "js_runtimes": {"quickjs": {}},
+            "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
             "postprocessor_args": {"Merger": ["-movflags", "+faststart"]},
             # VPN provides the egress region; do not advertise a stale fixed country.
             "geo_bypass": False,
@@ -1102,6 +1125,7 @@ class UniversalExtractor:
             "no_warnings": True, "socket_timeout": 20,
             "http_headers": _ytdlp_headers(),
             "js_runtimes": {"quickjs": {}},
+            "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
             # VPN provides the egress region; do not advertise a stale fixed country.
             "geo_bypass": False,
         }

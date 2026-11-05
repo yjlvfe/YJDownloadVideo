@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     # عدد مهام التنزيل المتزامنة؛ الطابور نفسه غير محدود.
     # القيمة قابلة للتعديل حسب عدد الاتصالات/الـIP المتاح.
     worker_max_workers: int = 4
-    max_fragment_connections_per_job: int = 64
+    max_fragment_connections_per_job: int = 32
     ytdlp_bin: str = "yt-dlp"
     ytdlp_proxy: str = ""  # بروكسي SOCKS5/HTTP لـ yt-dlp (يتجاوز حظر IP يوتيوب) — e.g. socks5://172.17.0.1:1080
     ffmpeg_bin: str = "ffmpeg"

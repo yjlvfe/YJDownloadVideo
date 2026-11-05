@@ -715,21 +715,14 @@ async def watch_and_deliver(chat_id: int, jid: str, status_msg=None):
     """رسالة حالة واحدة حية: تحميل % كل ثانية ← رفع % كل ثانية ← الملف ← تختفي.
 
     (2026-08: بلا طابور — الـ worker يعالج 20 مهمة متوازية، التحميل يبدأ فورًا.)"""
-    up_state = {"pct": 0, "done_bytes": 0, "http_done_at": 0.0, "started_at": time.monotonic()}
+    up_state = {"pct": 0}
 
     def sync_up_cb(current: int, total: int):
-        up_state["done_bytes"] = current
         if total:
-            if settings.telegram_bot_api_base:
-                raw_pct = min(100, int(current / total * 100))
-                up_state["pct"] = min(40, int(raw_pct * 0.40))
-                if current >= total and up_state["http_done_at"] == 0.0:
-                    up_state["http_done_at"] = time.monotonic()
-            else:
-                up_state["pct"] = min(99, int(current / total * 100))
+            up_state["pct"] = int(current / total * 100)
         elif current:
             # حجم غير معروف — يُحدث كل 5MB من progress_request
-            up_state["pct"] = min(95, current // (5 * 1024 * 1024) * 5)
+            up_state["pct"] = min(99, current // (5 * 1024 * 1024) * 5)
 
     bot = _bot_instance(progress_cb=sync_up_cb)
     try:
@@ -889,19 +882,17 @@ async def watch_and_deliver(chat_id: int, jid: str, status_msg=None):
 
             send_task = asyncio.create_task(do_send())
             last_up = -1
+            last_edit = 0.0
             while not send_task.done():
-                if settings.telegram_bot_api_base and up_state["http_done_at"] > 0.0 and size:
-                    mtproto_elapsed = max(0.0, time.monotonic() - up_state["http_done_at"])
-                    est_mtproto_sec = max(4.0, size / (10 * 1024 * 1024))
-                    ratio = mtproto_elapsed / (mtproto_elapsed + est_mtproto_sec * 0.45)
-                    pct = min(99, max(up_state["pct"], 40 + int(ratio * 59)))
-                else:
-                    pct = up_state["pct"]
-                if pct != last_up and bar is not None:
-                    est_uploaded = int(size * pct / 100) if size else up_state["done_bytes"]
-                    size_info = f" ({_fmt_mb(est_uploaded)} / {size_str})" if size and pct > 0 else f" ({size_str})"
-                    bar = await _edit_progress(bar, f"⬆️ {_progress_bar(pct)} {pct}%{size_info} — جارٍ الرفع")
+                pct = up_state["pct"]
+                now = time.monotonic()
+                if pct != last_up and (now - last_edit >= 2.0 or pct >= 100) and bar is not None:
+                    if pct >= 100:
+                        bar = await _edit_progress(bar, f"⬆️ {_progress_bar(100)} 100% ({size_str}) — جارٍ الإرسال إلى تيليجرام...")
+                    else:
+                        bar = await _edit_progress(bar, f"⬆️ {_progress_bar(pct)} {pct}% ({size_str}) — جارٍ الرفع")
                     last_up = pct
+                    last_edit = now
                 await asyncio.sleep(1)
             try:
                 await send_task

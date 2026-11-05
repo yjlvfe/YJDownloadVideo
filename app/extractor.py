@@ -177,76 +177,6 @@ def _probe_streams(path: Path | str) -> tuple[bool, bool]:
         return (True, True)
 
 
-def _install_straggler_hedge():
-    """يثبت معالج تخفيف بطء الأجزاء الأخيرة (Straggler Hedge) في yt-dlp لمنع التعليق عند 99%."""
-    try:
-        from yt_dlp.downloader.fragment import FragmentFD
-        if getattr(FragmentFD, "_straggler_hedge_installed", False):
-            return
-
-        _orig_download_fragment = getattr(FragmentFD, "_download_fragment", None)
-        if not _orig_download_fragment:
-            return
-
-        def _hedged_download_fragment(self, ctx, frag_url, info_dict, headers=None, request_data=None):
-            total_frags = ctx.get('total_frags') or 0
-            if total_frags <= 1:
-                return _orig_download_fragment(self, ctx, frag_url, info_dict, headers=headers, request_data=request_data)
-
-            fragment_filename = '%s-Frag%d' % (ctx['tmpfilename'], ctx['fragment_index'])
-            frag_idx = ctx.get('fragment_index', 0)
-            is_tail = total_frags > 10 and frag_idx >= int(total_frags * 0.95)
-            hedge_delay = 4.0 if is_tail else 10.0
-
-            done_event = threading.Event()
-            res = [False]
-            exc: list[Exception | None] = [None]
-
-            def _primary_worker():
-                try:
-                    res[0] = _orig_download_fragment(self, ctx, frag_url, info_dict, headers=headers, request_data=request_data)
-                except Exception as e:
-                    exc[0] = e
-                finally:
-                    done_event.set()
-
-            t = threading.Thread(target=_primary_worker, daemon=True)
-            t.start()
-
-            finished = done_event.wait(timeout=hedge_delay)
-            if finished:
-                if exc[0] is not None:
-                    raise exc[0]
-                return res[0]
-
-            log.warning("Straggler detected on frag %s/%s (> %ss), launching hedge request", frag_idx, total_frags, hedge_delay)
-            try:
-                req_headers = dict(headers or info_dict.get('http_headers') or {})
-                timeout = httpx.Timeout(connect=3.5, read=4.5, write=4.5, pool=3.5)
-                with httpx.Client(follow_redirects=True, timeout=timeout, proxy=settings.ytdlp_proxy or None) as client:
-                    resp = client.get(frag_url, headers=req_headers)
-                    if resp.status_code in (200, 206) and len(resp.content) > 0:
-                        tmp_hedge = Path(fragment_filename + ".hedge.tmp")
-                        tmp_hedge.parent.mkdir(parents=True, exist_ok=True)
-                        tmp_hedge.write_bytes(resp.content)
-                        tmp_hedge.replace(fragment_filename)
-                        ctx['fragment_filename_sanitized'] = fragment_filename
-                        log.info("Hedge request saved frag %s/%s (%s bytes) before primary!", frag_idx, total_frags, len(resp.content))
-                        return True
-            except Exception as he:
-                log.debug("Hedge request for frag %s did not succeed: %s", frag_idx, he)
-
-            done_event.wait(timeout=max(1.0, float(self.params.get('socket_timeout', 6)) + 2.0))
-            if exc[0] is not None:
-                raise exc[0]
-            return res[0]
-
-        setattr(FragmentFD, "_download_fragment", _hedged_download_fragment)
-        setattr(FragmentFD, "_straggler_hedge_installed", True)
-    except Exception as ie:
-        log.warning("Could not install straggler hedge: %s", ie)
-
-
 class UniversalExtractor:
     """المحرك الشامل: أي رابط ← فيديو ← ملف."""
 
@@ -265,7 +195,6 @@ class UniversalExtractor:
         self.request_timeout = request_timeout
         self.referer_headers = referer_headers
         self._cookies_tmp: list[str] = []
-        _install_straggler_hedge()
 
     # ------------------------------------------------------------------
     # واجهة عامة
@@ -700,9 +629,9 @@ class UniversalExtractor:
         opts["concurrent_fragment_downloads"] = max(1, settings.max_fragment_connections_per_job)
         opts["skip_unavailable_fragments"] = False
         opts["continuedl"] = False
-        opts["socket_timeout"] = 10
-        opts["fragment_retries"] = 5
-        opts["retries"] = 5
+        opts["socket_timeout"] = 8
+        opts["fragment_retries"] = 3
+        opts["retries"] = 3
 
         with YoutubeDL(opts) as ydl:
             res_info = ydl.extract_info(info["streaming_url"], download=True)
@@ -737,9 +666,9 @@ class UniversalExtractor:
         opts["concurrent_fragment_downloads"] = max(1, settings.max_fragment_connections_per_job)
         opts["skip_unavailable_fragments"] = False
         opts["continuedl"] = False
-        opts["socket_timeout"] = 10
-        opts["fragment_retries"] = 5
-        opts["retries"] = 5
+        opts["socket_timeout"] = 8
+        opts["fragment_retries"] = 3
+        opts["retries"] = 3
 
         with YoutubeDL(opts) as ydl:
             res_info = ydl.extract_info(info["streaming_url"], download=True)

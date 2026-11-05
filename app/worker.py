@@ -104,25 +104,16 @@ def process_job(job_id):
             # 🎯 نسبة تقدّم ذكية وسلسة:
             # 1. إذا كان تحميل أجزاء (HLS / DASH) نعتمد على نسبة الأجزاء المكتملة
             # 2. إذا كان الحجم الكلي معلوماً، نعتمد على done / total
-            # 3. لا نثبت عند 99% أثناء تحميل الأجزاء المتبقية بل نتدرج حتى 98% ثم 99% عند آخر جزء
+            # 3. نضمن ألا يتجمد عند 0% لحظة وصول أول بايت (max 1%)
             pct = 0
             if frag_count and frag_index is not None and frag_count > 0:
-                raw_pct = int((frag_index + 1) / frag_count * 100)
-                if (frag_index + 1) < frag_count:
-                    pct = max(1, min(98, raw_pct))
-                else:
-                    pct = 99
+                pct = max(1, min(99, int((frag_index + 1) / frag_count * 100)))
             elif total > 0 and done > 0:
-                raw_pct = int(done / total * 100)
-                if done < total:
-                    pct = max(1, min(98, raw_pct))
-                else:
-                    pct = 99
+                pct = max(1, min(99, int(done / total * 100)))
             else:
                 pct_str = (d.get('_percent_str') or '').strip().rstrip('%')
                 try:
-                    raw_pct = int(float(pct_str))
-                    pct = max(1 if done > 0 else 0, min(98, raw_pct))
+                    pct = max(1 if done > 0 else 0, min(99, int(float(pct_str))))
                 except (ValueError, TypeError):
                     pct = 1 if done > 0 else 0
 
